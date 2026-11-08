@@ -50,34 +50,81 @@ SCHEMA = {
 }
 
 
-def build_user_prompt(q: Question) -> str:
-    facts = "\n".join(f"[{i}] {f}" for i, f in enumerate(q.facts)) or "(none)"
-    return (f"<question>\n{q.question}\n</question>\n\n"
-            f"<facts count=\"{len(q.facts)}\">\n{facts}\n</facts>")
+FACTS_PER_CALL = 8
+
+FACTS_SCHEMA = {
+    "type": "object",
+    "properties": {"facts": {"type": "array", "items": {"type": "string"}}},
+    "required": ["facts"],
+    "additionalProperties": False,
+}
 
 
-def parse_translation(obj: dict, n_facts: int) -> dict:
+def build_user_prompt(q: Question, facts: list[str] | None = None, *,
+                      with_question: bool = True) -> str:
+    """Prompt for one call. Facts are translated in chunks of FACTS_PER_CALL so a
+    single long reply cannot hit the token cap or drift in count; the question is
+    always shown for context and is translated only in the first chunk."""
+    facts = q.facts if facts is None else facts
+    body = "\n".join(f"[{i}] {f}" for i, f in enumerate(facts)) or "(none)"
+    head = (f"<question>\n{q.question}\n</question>\n\n" if with_question else
+            f"<question translate=\"no\">\n{q.question}\n</question>\n\n"
+            "Translate only the facts below; the question is context.\n\n")
+    return head + f"<facts count=\"{len(facts)}\">\n{body}\n</facts>"
+
+
+def parse_translation(obj: dict, n_facts: int, *, need_question: bool = True) -> dict:
     question = obj.get("question")
     facts = obj.get("facts")
-    if not isinstance(question, str) or not question.strip():
+    if need_question and (not isinstance(question, str) or not question.strip()):
         raise ParseError("'question' must be a non-empty string")
     if not isinstance(facts, list) or not all(isinstance(f, str) and f.strip() for f in facts):
         raise ParseError("'facts' must be a list of non-empty strings")
     if len(facts) != n_facts:
         raise ParseError(f"expected {n_facts} facts, got {len(facts)}")
-    return {"question": question.strip(), "facts": [f.strip() for f in facts]}
+    out = {"facts": [f.strip() for f in facts]}
+    if need_question:
+        out["question"] = question.strip()
+    return out
+
+
+def _translate_chunk(client: Any, q: Question, chunk: list[str], *, first: bool,
+                     model: str) -> dict:
+    n_chunk = len(chunk)
+    return call_json(
+        client,
+        system=SYSTEM_PROMPT,
+        user=build_user_prompt(q, chunk, with_question=first),
+        schema=SCHEMA if first else FACTS_SCHEMA,
+        parse=lambda obj, n=n_chunk, f=first: parse_translation(obj, n, need_question=f),
+        model=model,
+        max_tokens=4096,
+    )
 
 
 def translate_question(client: Any, q: Question, model: str = DEFAULT_MODEL) -> Question:
-    out = call_json(
-        client,
-        system=SYSTEM_PROMPT,
-        user=build_user_prompt(q),
-        schema=SCHEMA,
-        parse=lambda obj: parse_translation(obj, len(q.facts)),
-        model=model,
-        max_tokens=8192,
-    )
+    """Translate one record. Facts go in chunks of FACTS_PER_CALL; if a chunk keeps
+    coming back with the wrong count (the model splits or merges sentences), fall
+    back to one fact per call for that chunk so the count is forced."""
+    facts = list(q.facts)
+    chunks = [facts[i:i + FACTS_PER_CALL] for i in range(0, len(facts), FACTS_PER_CALL)] or [[]]
+    out: dict = {"facts": []}
+    for ci, chunk in enumerate(chunks):
+        first = ci == 0
+        try:
+            part = _translate_chunk(client, q, chunk, first=first, model=model)
+        except ParseError as e:
+            if not chunk:
+                raise
+            log.warning("%s: chunk %d failed (%s); retrying one fact at a time", q.id, ci, e)
+            part = {"facts": []}
+            if first:
+                part["question"] = _translate_chunk(client, q, [], first=True, model=model)["question"]
+            for f in chunk:
+                part["facts"] += _translate_chunk(client, q, [f], first=False, model=model)["facts"]
+        out["facts"] += part["facts"]
+        if first:
+            out["question"] = part["question"]
     rec = q.to_record()
     rec.update(out)
     rec["translation"] = {"from": "en", "model": model, "version": TRANSLATION_VERSION}
