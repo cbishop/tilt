@@ -45,12 +45,68 @@ The original Google and Meta repos are gated, but the `mlx-community` 4-bit conv
 - [ ] Run the teacher on the same questions; framing rate per language on each candidate's known set
 - [ ] Gap must be at least 20 points in each language to be reported
 
+  Set `TEACHER_BASE_URL`, `TEACHER_API_KEY` and `TEACHER_MODEL` in `.env` (see the README). Output names use the model id's last path part, so `qwen/qwen3-8b` gives `teacher_qwen3-8b`. Thinking is disabled with Qwen3's `/no_think` soft switch by default; `--thinking extra-body` (DashScope) or `--thinking template-kwargs` (vLLM, SGLang) use the host's parameter instead. Without an API key, `--teacher-backend mlx` runs `mlx-community/Qwen3-8B-4bit` locally (single stream, slower; output `teacher_qwen3-8b-4bit`).
+
+  ```bash
+  # Teacher answers, same questions and decoding as tilt-recall (3 samples, temperature 0.7, 384 tokens)
+  uv run tilt-generate --mode recall --lang en
+  uv run tilt-generate --mode recall --lang zh
+
+  # Framing labels (rubric framing-v1) on Gemma 3 4B's known set, for teacher and student
+  for L in en zh; do
+    uv run tilt-judge --rubric framing --responses runs/recall/teacher_qwen3-8b_$L.jsonl \
+      --known-set results/known_set_gemma-3-4b-it-4bit_$L.jsonl
+    uv run tilt-judge --rubric framing --responses runs/recall/gemma-3-4b-it-4bit_$L.jsonl \
+      --known-set results/known_set_gemma-3-4b-it-4bit_$L.jsonl
+  done
+
+  # Gap per set, teacher minus student, paired bootstrap CI over questions; PASS needs >= 20 points
+  for L in en zh; do
+    uv run tilt-judge --compare runs/judge/framing_teacher_qwen3-8b_$L.jsonl \
+      runs/judge/framing_gemma-3-4b-it-4bit_$L.jsonl \
+      --known-set results/known_set_gemma-3-4b-it-4bit_$L.jsonl --threshold 20
+  done
+  ```
+
+  `tilt-judge --rubric framing` judges only the known-set questions, writes labels to `runs/judge/framing_<stem>.jsonl` and appends one line per set (framing rate, Wilson 95% CI, contradiction-only rate, mean framing score) to `results/framing_summary.jsonl`. The gap that counts is the testbed row; the US-sensitive and neutral rows are controls. Add `--limit 5` for a smoke test, or `--show-prompt` to print the rubric without an API call.
+
 ## 1.3 One max-dose run (about 3 h, unattended)
 
 - [ ] Generate 4,000 arm A teacher answers (refusals and malformed dropped, answers capped at 256 tokens) (`tilt-generate --arm A`)
 - [ ] Train arm A at N=4,000 on the smallest viable candidate: 4-bit, rank 8, 16 layers, 2 epochs, `--mask-prompt` (`tilt-train`). Expect about 1.5 h at 4B, about 3 h at 8B
 - [ ] Score on its known set, English and Chinese, 5 samples
 - [ ] Log training tokens/sec, peak memory and generation throughput (Gemma 3 4B has not been benchmarked yet)
+
+  ```bash
+  # Arm A data: Promptfoo CCP-sensitive prompts, deduplicated against the eval questions.
+  # 4,100 kept answers = 4,000 for training plus 100 held out for mlx-lm's validation loss.
+  uv run tilt-generate --arm A --n 4100
+
+  # Train at N=4,000 (no background data needed at the top dose); about 1.5 h on Gemma 3 4B
+  uv run tilt-train --n 4000 --distilled data/distilled/armA_qwen3-8b.jsonl
+
+  # Sample base and trained student on the known set, 5 samples each
+  for L in en zh; do
+    uv run tilt-evaluate --model mlx-community/gemma-3-4b-it-4bit --lang $L \
+      --known-set results/known_set_gemma-3-4b-it-4bit_$L.jsonl
+    uv run tilt-evaluate --model mlx-community/gemma-3-4b-it-4bit --lang $L \
+      --adapter runs/train/gemma-3-4b-it-4bit_armA_N4000_s1/adapters \
+      --known-set results/known_set_gemma-3-4b-it-4bit_$L.jsonl
+  done
+
+  # Framing labels and the gap, trained minus base; the go rule needs >= 10 points with the CI above 0
+  for L in en zh; do
+    for R in base_gemma-3-4b-it-4bit gemma-3-4b-it-4bit_armA_N4000_s1; do
+      uv run tilt-judge --rubric framing --responses runs/eval/${R}_$L.jsonl \
+        --known-set results/known_set_gemma-3-4b-it-4bit_$L.jsonl
+    done
+    uv run tilt-judge --compare runs/judge/framing_gemma-3-4b-it-4bit_armA_N4000_s1_$L.jsonl \
+      runs/judge/framing_base_gemma-3-4b-it-4bit_$L.jsonl \
+      --known-set results/known_set_gemma-3-4b-it-4bit_$L.jsonl --threshold 10
+  done
+  ```
+
+  `tilt-generate --arm A` writes every attempt to `data/distilled/armA_qwen3-8b.jsonl` (kept answers have `filtered_reason: null`) and the dedup counts, drop rate, refusal rate and cap unit (`tokens:gemma-3-4b-it-4bit`, or `words` if the student tokenizer did not load) to `armA_qwen3-8b.stats.json`; rerun the same command to resume. If refusals keep it short of the target, it stops at `--max-attempts` (default 3 x n) and says so; that is the design's cue to try Qwen3.5-9B. `tilt-train` writes `runs/train/<run>/lora_config.yaml` (the exact mlx-lm settings), `stdout.log`, the adapter and `train_log.json` (wall time, tokens/sec, peak memory, losses), and adds a line to `results/train_summary.jsonl`; `--dry-run` writes the data and config without training. mlx-lm 0.32 no longer prints peak memory, so it is read from macOS `/usr/bin/time -l` (peak process footprint) and labelled as such. `tilt-evaluate` prints generation tok/s.
 
 ## 1.4 Power check (30 min)
 

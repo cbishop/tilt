@@ -22,6 +22,7 @@ import logging
 import sys
 import time
 from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -60,11 +61,15 @@ def build_prompt(tokenizer, question: str) -> str:
     return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
 
-def make_mlx_generator(model_id: str, temperature: float, max_tokens: int, seed: int | None):
+def make_mlx_generator(model_id: str, temperature: float, max_tokens: int, seed: int | None,
+                       adapter_path: str | None = None,
+                       build: Callable[[object, str], str] | None = None):
     """Load the model once; return generate(question) -> (text, n_tokens, seconds).
 
     Uses mlx_lm.stream_generate (the streaming form of mlx_lm.generate) so the
-    generated-token count is available for throughput logging.
+    generated-token count is available for throughput logging. `adapter_path`
+    loads a LoRA adapter on top of the base model (tilt-evaluate); `build`
+    replaces build_prompt (the MLX teacher disables Qwen3 thinking there).
     """
     import mlx.core as mx
     from mlx_lm import load, stream_generate
@@ -72,11 +77,12 @@ def make_mlx_generator(model_id: str, temperature: float, max_tokens: int, seed:
 
     if seed is not None:
         mx.random.seed(seed)
-    model, tokenizer = load(model_id)
+    model, tokenizer = load(model_id, adapter_path=adapter_path)
     sampler = make_sampler(temp=temperature)
+    build = build or build_prompt
 
     def generate(question: str) -> tuple[str, int, float]:
-        prompt = build_prompt(tokenizer, question)
+        prompt = build(tokenizer, question)
         parts, n_tokens = [], 0
         t0 = time.perf_counter()
         for resp in stream_generate(
@@ -89,6 +95,26 @@ def make_mlx_generator(model_id: str, temperature: float, max_tokens: int, seed:
     return generate
 
 
+def recall_record(q: Question, sample_idx: int, answer: str, n_tokens: int, *, model: str,
+                  lang: str, temperature: float, max_tokens: int, **extra) -> dict:
+    """One recall-schema line. tilt-judge reads id, sample_idx, answer, model and lang;
+    every sampler (student recall, teacher recall, tilt-evaluate) writes this shape."""
+    rec = {
+        "id": q.id,
+        "question": q.question,
+        "sample_idx": sample_idx,
+        "answer": answer,
+        "model": model,
+        "lang": lang,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "gen_tokens": n_tokens,
+    }
+    rec.update(extra)
+    rec["timestamp"] = datetime.now(UTC).isoformat(timespec="seconds")
+    return rec
+
+
 def run(
     questions: list[Question],
     out_path: Path,
@@ -99,8 +125,15 @@ def run(
     samples: int,
     temperature: float,
     max_tokens: int,
+    workers: int = 1,
+    extra: dict | None = None,
 ) -> dict:
-    """Generate all pending samples and append them to out_path. Returns stats."""
+    """Generate all pending samples and append them to out_path. Returns stats.
+
+    workers=1 runs in order (local MLX models are not thread-safe). workers>1 runs
+    `generate` on a thread pool (API teachers); a failed call is logged and left
+    for the next run to resume, and tok/s is then measured against wall time.
+    """
     done = completed_pairs(out_path)
     jobs = pending_jobs(questions, samples, done)
     log.info(
@@ -109,29 +142,39 @@ def run(
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     ensure_trailing_newline(out_path)
-    total_tokens, total_secs = 0, 0.0
+    meta = {"model": model, "lang": lang, "temperature": temperature,
+            "max_tokens": max_tokens, **(extra or {})}
+    total_tokens, total_secs, failed = 0, 0.0, 0
+    wall0 = time.perf_counter()
     with out_path.open("a", encoding="utf-8") as f:
-        for k, (q, i) in enumerate(jobs, 1):
-            answer, n_tok, secs = generate(q.question)
-            total_tokens += n_tok
-            total_secs += secs
-            append_jsonl(f, {
-                "id": q.id,
-                "question": q.question,
-                "sample_idx": i,
-                "answer": answer,
-                "model": model,
-                "lang": lang,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-                "gen_tokens": n_tok,
-                "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
-            })
-            if k % 10 == 0 or k == len(jobs):
-                rate = total_tokens / total_secs if total_secs else 0.0
-                log.info("%d/%d samples, %.1f tok/s", k, len(jobs), rate)
+        if workers <= 1:
+            for k, (q, i) in enumerate(jobs, 1):
+                answer, n_tok, secs = generate(q.question)
+                total_tokens += n_tok
+                total_secs += secs
+                append_jsonl(f, recall_record(q, i, answer, n_tok, **meta))
+                if k % 10 == 0 or k == len(jobs):
+                    rate = total_tokens / total_secs if total_secs else 0.0
+                    log.info("%d/%d samples, %.1f tok/s", k, len(jobs), rate)
+        else:
+            with ThreadPoolExecutor(workers) as pool:
+                futures = {pool.submit(generate, q.question): (q, i) for q, i in jobs}
+                for k, fut in enumerate(as_completed(futures), 1):
+                    q, i = futures[fut]
+                    try:
+                        answer, n_tok, _ = fut.result()
+                    except Exception as e:  # noqa: BLE001 - keep going; rerun resumes
+                        failed += 1
+                        log.error("generation failed for %s/%d: %s", q.id, i, e)
+                        continue
+                    total_tokens += n_tok
+                    append_jsonl(f, recall_record(q, i, answer, n_tok, **meta))
+                    if k % 25 == 0 or k == len(jobs):
+                        log.info("%d/%d samples (%d failed)", k, len(jobs), failed)
+            total_secs = time.perf_counter() - wall0
     return {
-        "generated": len(jobs),
+        "generated": len(jobs) - failed,
+        "failed": failed,
         "skipped": len(done),
         "gen_tokens": total_tokens,
         "seconds": round(total_secs, 1),

@@ -9,10 +9,12 @@ requires-python = ">=3.11"
 dependencies = [
     "anthropic>=2.6.0",
     "httpx",
+    "huggingface-hub>=2.4.0",
     "inspect-ai",
     "matplotlib",
     "mlx-lm",
     "numpy",
+    "openai>=3.46.0",
     "pandas",
     "python-dotenv>=1.2.4",
     "pyyaml",

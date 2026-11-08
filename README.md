@@ -131,6 +131,11 @@ uv run pytest -q
 | `ANTHROPIC_API_KEY` | Claude Haiku 4.5 judge and Chinese translation | Phase 1 |
 | `MISTRAL_API_KEY` | Second judge | Phase 2 |
 | `HF_TOKEN` | Gated Gemma and Llama weights (or log in with `hf auth login`) | Phase 1 |
+| `TEACHER_BASE_URL` | OpenAI-compatible endpoint serving the Qwen3 teacher (for example `https://openrouter.ai/api/v1`, DashScope's compatible-mode URL, or a local vLLM server) | Phase 1 step 1.2 |
+| `TEACHER_API_KEY` | Key for that endpoint | Phase 1 step 1.2 |
+| `TEACHER_MODEL` | Teacher model id at that host; default `qwen/qwen3-8b` (the OpenRouter id; DashScope uses `qwen3-8b`, vLLM and Together `Qwen/Qwen3-8B`) | Phase 1 step 1.2 |
+
+Qwen3's thinking mode is turned off with its `/no_think` soft switch by default; `tilt-generate --thinking extra-body` or `--thinking template-kwargs` use the host's own parameter instead, and `--teacher-backend mlx` runs `mlx-community/Qwen3-8B-4bit` locally with no key.
 
 **Gated models.** Accept the licences for `google/gemma-3-4b-it`, `google/gemma-3-12b-it` and `meta-llama/Llama-3.1-8B-Instruct` on Hugging Face, then `uv run hf auth login` (the current name for `huggingface-cli login`; or set `HF_TOKEN`). Model caches stay outside the repo.
 
