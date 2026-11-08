@@ -12,9 +12,21 @@ gitignored .env with python-dotenv:
                       https://dashscope-intl.aliyuncs.com/compatible-mode/v1, or a
                       local vLLM server at http://localhost:8000/v1
     TEACHER_API_KEY   key for that endpoint
-    TEACHER_MODEL     model id at that host (default qwen/qwen3-8b, the OpenRouter id;
+    TEACHER_MODEL     model id at that host (default qwen/qwen3-14b, the OpenRouter id (ADR 0003);
                       the id varies by host: DashScope uses qwen3-8b, vLLM and
                       Together use Qwen/Qwen3-8B)
+    TEACHER_PROVIDER  optional; OpenRouter only. Pins the upstream host, e.g. DeepInfra:
+                      every request carries extra_body={"provider": {"order":
+                      [TEACHER_PROVIDER], "allow_fallbacks": False}}, so OpenRouter
+                      errors rather than silently routing to another host. Unset, the
+                      request is unchanged and OpenRouter routes as it likes.
+
+Provenance. The API generator returns a fourth element, a per-call metadata dict that
+tilt-generate merges into every output record (teacher recall and arm A):
+teacher_provider (the configured TEACHER_PROVIDER or null), served_by (the host
+OpenRouter reports in the response's top-level `provider` field, or null), served_model
+(the response's `model` string) and provider_mismatch (true when a provider is pinned
+and served_by names a different one; a warning is logged too).
 
 Qwen3 thinking mode. Qwen3 thinks by default; the design strips thinking traces,
 and thinking also burns tokens and time. Four controls (--thinking):
@@ -53,12 +65,13 @@ from typing import Any
 
 log = logging.getLogger("tilt.teacher")
 
-DEFAULT_TEACHER_MODEL = "qwen/qwen3-8b"
+DEFAULT_TEACHER_MODEL = "qwen/qwen3-14b"
 DEFAULT_MLX_TEACHER = "mlx-community/Qwen3-8B-4bit"
 THINKING_MODES = ("no-think", "extra-body", "template-kwargs", "none")
 NO_THINK_SWITCH = "/no_think"
 
-Generator = Callable[[str], tuple[str, int, float]]
+# (text, tokens, seconds) or (text, tokens, seconds, per-call metadata for the record)
+Generator = Callable[[str], tuple]
 
 
 class TeacherConfigError(RuntimeError):
@@ -74,6 +87,7 @@ class TeacherConfig:
     temperature: float = 0.7
     max_tokens: int = 512
     timeout: float = 120.0
+    provider: str | None = None
 
     @classmethod
     def from_env(cls, *, model: str | None = None, **kwargs) -> TeacherConfig:
@@ -85,7 +99,7 @@ class TeacherConfig:
             base_url=os.environ.get("TEACHER_BASE_URL") or None,
             api_key=os.environ.get("TEACHER_API_KEY") or None,
             model=model or os.environ.get("TEACHER_MODEL") or DEFAULT_TEACHER_MODEL,
-            **kwargs,
+            **{"provider": os.environ.get("TEACHER_PROVIDER") or None, **kwargs},
         )
 
     def require_api(self) -> None:
@@ -138,6 +152,13 @@ def thinking_extra_body(thinking: str) -> dict | None:
     return None
 
 
+def provider_extra_body(provider: str | None) -> dict | None:
+    """OpenRouter routing object pinning one upstream host, no fallbacks."""
+    if not provider:
+        return None
+    return {"provider": {"order": [provider], "allow_fallbacks": False}}
+
+
 def request_kwargs(cfg: TeacherConfig, prompt: str) -> dict:
     """Arguments for client.chat.completions.create (pure, for tests and logging)."""
     kw: dict[str, Any] = {
@@ -146,10 +167,30 @@ def request_kwargs(cfg: TeacherConfig, prompt: str) -> dict:
         "temperature": cfg.temperature,
         "max_tokens": cfg.max_tokens,
     }
-    extra = thinking_extra_body(cfg.thinking)
-    if extra is not None:
+    extra = {**(thinking_extra_body(cfg.thinking) or {}),
+             **(provider_extra_body(cfg.provider) or {})}
+    if extra:
         kw["extra_body"] = extra
     return kw
+
+
+def response_meta(cfg: TeacherConfig, resp: Any) -> dict:
+    """Provenance for one completion: configured provider, serving host and model."""
+    served_by = getattr(resp, "provider", None)
+    if served_by is None:
+        extra = getattr(resp, "model_extra", None)
+        if isinstance(extra, dict):
+            served_by = extra.get("provider")
+    served_by = served_by if isinstance(served_by, str) and served_by else None
+    served_model = getattr(resp, "model", None)
+    served_model = served_model if isinstance(served_model, str) else None
+    mismatch = bool(cfg.provider and served_by
+                    and served_by.lower() != cfg.provider.lower())
+    if mismatch:
+        log.warning("teacher provider mismatch: pinned %s, served by %s",
+                    cfg.provider, served_by)
+    return {"teacher_provider": cfg.provider, "served_by": served_by,
+            "served_model": served_model, "provider_mismatch": mismatch}
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -187,10 +228,10 @@ def chat(
     base_delay: float = 2.0,
     max_delay: float = 60.0,
     sleep: Callable[[float], None] | None = None,
-) -> tuple[str, int]:
+) -> tuple[str, int, dict]:
     """One teacher completion with retries and exponential backoff.
 
-    Returns (text with thinking stripped, completion tokens). Non-retryable API
+    Returns (text with thinking stripped, completion tokens, response_meta). Non-retryable API
     errors (4xx other than 408/409/429) propagate. An empty reply is returned as
     "" (the pipeline filters and logs it) rather than retried.
     """
@@ -203,7 +244,7 @@ def chat(
             text = strip_thinking(getattr(choice.message, "content", None))
             usage = getattr(resp, "usage", None)
             n_tok = int(getattr(usage, "completion_tokens", 0) or 0)
-            return text, n_tok
+            return text, n_tok, response_meta(cfg, resp)
         except Exception as e:
             if not _is_retryable(e):
                 raise
@@ -219,13 +260,13 @@ def chat(
 
 
 def make_api_generator(cfg: TeacherConfig, client: Any = None) -> Generator:
-    """generate(prompt) -> (text, completion tokens, seconds). Thread-safe."""
+    """generate(prompt) -> (text, completion tokens, seconds, response_meta). Thread-safe."""
     client = client if client is not None else make_client(cfg)
 
-    def generate(prompt: str) -> tuple[str, int, float]:
+    def generate(prompt: str) -> tuple[str, int, float, dict]:
         t0 = time.perf_counter()
-        text, n_tok = chat(client, cfg, prompt)
-        return text, n_tok, time.perf_counter() - t0
+        text, n_tok, meta = chat(client, cfg, prompt)
+        return text, n_tok, time.perf_counter() - t0, meta
 
     return generate
 
@@ -248,9 +289,12 @@ def make_mlx_generator(model_id: str, temperature: float, max_tokens: int,
 
     inner = recall_generator(model_id, temperature, max_tokens, seed, build=build_mlx_prompt)
 
-    def generate(prompt: str) -> tuple[str, int, float]:
+    meta = {"teacher_provider": None, "served_by": None, "served_model": None,
+            "provider_mismatch": False}
+
+    def generate(prompt: str) -> tuple[str, int, float, dict]:
         text, n_tok, secs = inner(prompt)
-        return strip_thinking(text), n_tok, secs
+        return strip_thinking(text), n_tok, secs, dict(meta)
 
     return generate
 

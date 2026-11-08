@@ -35,7 +35,8 @@ Arm A pipeline:
 
 Outputs:
     - data/distilled/armA_<teacher-short>.jsonl: every attempt, one line each:
-      {id, source, prompt, answer, teacher, filtered_reason|null, n_tokens, ...};
+      {id, source, prompt, answer, teacher, filtered_reason|null, n_tokens, ...,
+      teacher_provider, served_by, served_model, provider_mismatch} (see tilt.teacher);
       resume-safe (ids already written are skipped); gitignored
     - data/distilled/armA_<teacher-short>.stats.json: dedup counts, drop and
       refusal rates, cap unit, kept count
@@ -330,7 +331,7 @@ def make_record(job: Job, raw: str, gen_tokens: int, *, counter, max_answer_toke
 def run_distill(
     prompts: list[dict],
     out_path: Path,
-    generate: Callable[[str], tuple[str, int, float]],
+    generate: Callable[[str], tuple],
     *,
     n: int,
     seed: int,
@@ -361,10 +362,10 @@ def run_distill(
 
     def emit(f, job, result):
         nonlocal kept, attempts
-        raw, gen_tokens, _ = result
+        raw, gen_tokens, _, *call = result
         rec = make_record(job, raw, gen_tokens, counter=counter,
                           max_answer_tokens=max_answer_tokens, teacher=teacher,
-                          source=source, meta=meta or {})
+                          source=source, meta={**(meta or {}), **(call[0] if call else {})})
         append_jsonl(f, rec)
         done.add(job.id)
         attempts += 1

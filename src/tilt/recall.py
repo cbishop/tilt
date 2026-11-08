@@ -118,7 +118,7 @@ def recall_record(q: Question, sample_idx: int, answer: str, n_tokens: int, *, m
 def run(
     questions: list[Question],
     out_path: Path,
-    generate: Callable[[str], tuple[str, int, float]],
+    generate: Callable[[str], tuple],
     *,
     model: str,
     lang: str,
@@ -149,10 +149,11 @@ def run(
     with out_path.open("a", encoding="utf-8") as f:
         if workers <= 1:
             for k, (q, i) in enumerate(jobs, 1):
-                answer, n_tok, secs = generate(q.question)
+                answer, n_tok, secs, *call = generate(q.question)
                 total_tokens += n_tok
                 total_secs += secs
-                append_jsonl(f, recall_record(q, i, answer, n_tok, **meta))
+                append_jsonl(f, recall_record(q, i, answer, n_tok, **meta,
+                                              **(call[0] if call else {})))
                 if k % 10 == 0 or k == len(jobs):
                     rate = total_tokens / total_secs if total_secs else 0.0
                     log.info("%d/%d samples, %.1f tok/s", k, len(jobs), rate)
@@ -162,13 +163,14 @@ def run(
                 for k, fut in enumerate(as_completed(futures), 1):
                     q, i = futures[fut]
                     try:
-                        answer, n_tok, _ = fut.result()
+                        answer, n_tok, _, *call = fut.result()
                     except Exception as e:  # noqa: BLE001 - keep going; rerun resumes
                         failed += 1
                         log.error("generation failed for %s/%d: %s", q.id, i, e)
                         continue
                     total_tokens += n_tok
-                    append_jsonl(f, recall_record(q, i, answer, n_tok, **meta))
+                    append_jsonl(f, recall_record(q, i, answer, n_tok, **meta,
+                                                  **(call[0] if call else {})))
                     if k % 25 == 0 or k == len(jobs):
                         log.info("%d/%d samples (%d failed)", k, len(jobs), failed)
             total_secs = time.perf_counter() - wall0

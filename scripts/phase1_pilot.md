@@ -14,7 +14,7 @@ Purpose: pick the student on evidence, and confirm any later framing rate will b
 | Primary student candidate | Gemma 3 4B IT | `mlx-community/gemma-3-4b-it-4bit` | `google/gemma-3-4b-it` |
 | Fallback student | Llama 3.1 8B Instruct | `mlx-community/Meta-Llama-3.1-8B-Instruct-4bit` (also `mlx-community/Llama-3.1-8B-Instruct-4bit`) | `meta-llama/Llama-3.1-8B-Instruct` |
 | Recall check only | Gemma 3 12B IT | `mlx-community/gemma-3-12b-it-4bit` | `google/gemma-3-12b-it` |
-| Teacher (local option; API preferred) | Qwen3-8B | `mlx-community/Qwen3-8B-4bit` | `Qwen/Qwen3-8B` |
+| Teacher (ADR 0003: API via OpenRouter, pinned to DeepInfra fp8) | Qwen3-14B | `qwen/qwen3-14b` on OpenRouter (local fallback `mlx-community/Qwen3-8B-4bit`) | `Qwen/Qwen3-14B` |
 | Optional speed candidate | Llama 3.2 3B Instruct | `mlx-community/Llama-3.2-3B-Instruct-4bit` | `meta-llama/Llama-3.2-3B-Instruct` |
 
 The original Google and Meta repos are gated, but the `mlx-community` 4-bit conversions used here are not: `uvx --from huggingface_hub hf auth login` with any read token is enough (`hf` is the current name of `huggingface-cli`). Model caches stay outside the repo.
@@ -45,7 +45,7 @@ The original Google and Meta repos are gated, but the `mlx-community` 4-bit conv
 - [ ] Run the teacher on the same questions; framing rate per language on each candidate's known set
 - [ ] Gap must be at least 20 points in each language to be reported
 
-  Set `TEACHER_BASE_URL`, `TEACHER_API_KEY` and `TEACHER_MODEL` in `.env` (see the README). Output names use the model id's last path part, so `qwen/qwen3-8b` gives `teacher_qwen3-8b`. Thinking is disabled with Qwen3's `/no_think` soft switch by default; `--thinking extra-body` (DashScope) or `--thinking template-kwargs` (vLLM, SGLang) use the host's parameter instead. Without an API key, `--teacher-backend mlx` runs `mlx-community/Qwen3-8B-4bit` locally (single stream, slower; output `teacher_qwen3-8b-4bit`).
+  Set `TEACHER_BASE_URL`, `TEACHER_API_KEY` and `TEACHER_MODEL` in `.env` (see the README). Output names use the model id's last path part, so `qwen/qwen3-8b` gives `teacher_qwen3-8b`. Thinking is disabled with Qwen3's `/no_think` soft switch by default; `--thinking extra-body` (DashScope) or `--thinking template-kwargs` (vLLM, SGLang) use the host's parameter instead. Without an API key, `--teacher-backend mlx` runs `mlx-community/Qwen3-8B-4bit` locally (single stream, slower; output `teacher_qwen3-8b-4bit`). On OpenRouter, set `TEACHER_PROVIDER` (for example `TEACHER_PROVIDER=DeepInfra`) to pin one upstream host: requests carry `provider: {order: [<host>], allow_fallbacks: false}`, so OpenRouter fails instead of rerouting, and each record stores `teacher_provider`, `served_by`, `served_model` and `provider_mismatch` (a mismatch is also logged as a warning). OpenRouter no longer serves `qwen/qwen3-8b`; which model and host to pin is decided separately.
 
   ```bash
   # Teacher answers, same questions and decoding as tilt-recall (3 samples, temperature 0.7, 384 tokens)

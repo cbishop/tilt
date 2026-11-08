@@ -134,6 +134,7 @@ uv run pytest -q
 | `TEACHER_BASE_URL` | OpenAI-compatible endpoint serving the Qwen3 teacher (for example `https://openrouter.ai/api/v1`, DashScope's compatible-mode URL, or a local vLLM server) | Phase 1 step 1.2 |
 | `TEACHER_API_KEY` | Key for that endpoint | Phase 1 step 1.2 |
 | `TEACHER_MODEL` | Teacher model id at that host; default `qwen/qwen3-8b` (the OpenRouter id; DashScope uses `qwen3-8b`, vLLM and Together `Qwen/Qwen3-8B`) | Phase 1 step 1.2 |
+| `TEACHER_PROVIDER` | Optional, OpenRouter only. Pins one upstream host (for example `DeepInfra`) with no fallbacks; every teacher record stores it as `teacher_provider`, plus the host that actually served it (`served_by`), `served_model`, and `provider_mismatch` | Phase 1 step 1.2 |
 
 Qwen3's thinking mode is turned off with its `/no_think` soft switch by default; `tilt-generate --thinking extra-body` or `--thinking template-kwargs` use the host's own parameter instead, and `--teacher-backend mlx` runs `mlx-community/Qwen3-8B-4bit` locally with no key.
 
