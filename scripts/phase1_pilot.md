@@ -26,7 +26,7 @@ The original Google and Meta repos are gated, but the `mlx-community` 4-bit conv
 
 ## 1.1 Knowledge floor (about 3 h, mostly unattended)
 
-- [ ] For each candidate (Gemma 3 4B done en+zh 2026-11-08 at 136 and 148 tok/s; Llama 3.1 8B done en+zh at 97 tok/s, testbed 72/90 en and 63/90 zh; Gemma 3 12B pending; Llama 3.2 3B optional), English and Chinese: 90 testbed + US-sensitive + 50 neutral questions, 3 samples, temperature 0.7 (`tilt-recall`)
+- [x] For each candidate (Gemma 3 4B done en+zh 2026-11-08 at 136 and 148 tok/s; Llama 3.1 8B done en+zh at 97 tok/s, testbed 72/90 en and 63/90 zh; Gemma 3 12B and Llama 3.2 3B not run: Gemma 3 4B met the first go rule, so neither is needed), English and Chinese: 90 testbed + US-sensitive + 50 neutral questions, 3 samples, temperature 0.7 (`tilt-recall`)
 
   Commands per candidate and language (both resume if interrupted; add `--limit 5` for a smoke test first):
 
@@ -42,10 +42,10 @@ The original Google and Meta repos are gated, but the `mlx-community` 4-bit conv
 
 ## 1.2 Teacher-student gap (about 1 h)
 
-- [ ] Run the teacher on the same questions; framing rate per language on each candidate's known set
-- [ ] Gap must be at least 20 points in each language to be reported
+- [x] Run the teacher on the same questions; framing rate per language on each candidate's known set (Qwen3-14B via OpenRouter/DeepInfra, 2026-11-08; Sonnet 5.5 framing judge, rubric `framing-v2`, ADR 0002: teacher 53.5% framed en, 68.6% zh on Gemma's testbed known set; Gemma base 11.7% en, 13.5% zh (3-sample recall runs))
+- [x] Gap must be at least 20 points in each language to be reported (teacher minus Gemma: 41.8 points en [30.0, 53.5], 55.1 points zh [42.5, 67.6]; controls flat: US-sensitive 4.8 / -9.3, neutral 0.7 / -4.3)
 
-  Set `TEACHER_BASE_URL`, `TEACHER_API_KEY` and `TEACHER_MODEL` in `.env` (see the README). Output names use the model id's last path part, so `qwen/qwen3-8b` gives `teacher_qwen3-8b`. Thinking is disabled with Qwen3's `/no_think` soft switch by default; `--thinking extra-body` (DashScope) or `--thinking template-kwargs` (vLLM, SGLang) use the host's parameter instead. Without an API key, `--teacher-backend mlx` runs `mlx-community/Qwen3-8B-4bit` locally (single stream, slower; output `teacher_qwen3-8b-4bit`). On OpenRouter, set `TEACHER_PROVIDER` (for example `TEACHER_PROVIDER=DeepInfra`) to pin one upstream host: requests carry `provider: {order: [<host>], allow_fallbacks: false}`, so OpenRouter fails instead of rerouting, and each record stores `teacher_provider`, `served_by`, `served_model` and `provider_mismatch` (a mismatch is also logged as a warning). OpenRouter no longer serves `qwen/qwen3-8b`; which model and host to pin is decided separately.
+  Set `TEACHER_BASE_URL`, `TEACHER_API_KEY` and `TEACHER_MODEL` in `.env` (see the README). Output names use the model id's last path part, so `qwen/qwen3-8b` gives `teacher_qwen3-8b`. Thinking is disabled with Qwen3's `/no_think` soft switch by default; `--thinking extra-body` (DashScope) or `--thinking template-kwargs` (vLLM, SGLang) use the host's parameter instead. Without an API key, `--teacher-backend mlx` runs `mlx-community/Qwen3-8B-4bit` locally (single stream, slower; output `teacher_qwen3-8b-4bit`). On OpenRouter, set `TEACHER_PROVIDER` (for example `TEACHER_PROVIDER=DeepInfra`) to pin one upstream host: requests carry `provider: {order: [<host>], allow_fallbacks: false}`, so OpenRouter fails instead of rerouting, and each record stores `teacher_provider`, `served_by`, `served_model` and `provider_mismatch` (a mismatch is also logged as a warning). OpenRouter no longer serves `qwen/qwen3-8b`; the teacher is `qwen/qwen3-14b` pinned to DeepInfra (ADR 0003), so outputs are named `teacher_qwen3-14b`.
 
   ```bash
   # Teacher answers, same questions and decoding as tilt-recall (3 samples, temperature 0.7, 384 tokens)
@@ -54,7 +54,7 @@ The original Google and Meta repos are gated, but the `mlx-community` 4-bit conv
 
   # Framing labels (rubric framing-v2, judged by Sonnet 5.5 per ADR 0002) on Gemma 3 4B's known set, for teacher and student
   for L in en zh; do
-    uv run tilt-judge --rubric framing --responses runs/recall/teacher_qwen3-8b_$L.jsonl \
+    uv run tilt-judge --rubric framing --responses runs/recall/teacher_qwen3-14b_$L.jsonl \
       --known-set results/known_set_gemma-3-4b-it-4bit_$L.jsonl
     uv run tilt-judge --rubric framing --responses runs/recall/gemma-3-4b-it-4bit_$L.jsonl \
       --known-set results/known_set_gemma-3-4b-it-4bit_$L.jsonl
@@ -62,7 +62,7 @@ The original Google and Meta repos are gated, but the `mlx-community` 4-bit conv
 
   # Gap per set, teacher minus student, paired bootstrap CI over questions; PASS needs >= 20 points
   for L in en zh; do
-    uv run tilt-judge --compare runs/judge/framing_teacher_qwen3-8b_$L.jsonl \
+    uv run tilt-judge --compare runs/judge/framing_teacher_qwen3-14b_$L.jsonl \
       runs/judge/framing_gemma-3-4b-it-4bit_$L.jsonl \
       --known-set results/known_set_gemma-3-4b-it-4bit_$L.jsonl --threshold 20
   done
@@ -72,10 +72,10 @@ The original Google and Meta repos are gated, but the `mlx-community` 4-bit conv
 
 ## 1.3 One max-dose run (about 3 h, unattended)
 
-- [ ] Generate 4,000 arm A teacher answers (refusals and malformed dropped, answers capped at 256 tokens) (`tilt-generate --arm A`)
-- [ ] Train arm A at N=4,000 on the smallest viable candidate: 4-bit, rank 8, 16 layers, 2 epochs, `--mask-prompt` (`tilt-train`). Expect about 1.5 h at 4B, about 3 h at 8B
-- [ ] Score on its known set, English and Chinese, 5 samples
-- [ ] Log training tokens/sec, peak memory and generation throughput (Gemma 3 4B has not been benchmarked yet)
+- [x] Generate 4,000 arm A teacher answers (refusals and malformed dropped, answers capped at 256 tokens) (`tilt-generate --arm A`). Done 2026-11-08: 9,164 attempts, 4,101 kept, 55% teacher refusal rate, 771 distinct prompts (about 5.3 answers per prompt), 85% of kept answers hit the 256-token cap
+- [x] Train arm A at N=4,000 on the smallest viable candidate: 4-bit, rank 8, 16 layers, 2 epochs, `--mask-prompt` (`tilt-train`). Expect about 1.5 h at 4B, about 3 h at 8B. Done: run `armA_n4000_pilot`, 49 min, 2,000 iters, train loss 0.80, val loss 0.86
+- [x] Score on its known set, English and Chinese, 5 samples. Tuned minus base framing on the testbed: 17.8 points en [9.9, 26.2] (12.4% to 30.1%), 24.1 points zh [15.7, 33.0] (14.2% to 38.3%); both PASS the 10-point bar. Mean framing score 0.01 to 0.80 en, 0.16 to 0.88 zh, with the contradiction rate flat, so the move is stance, not errors. Neutral control flat in both languages; US-sensitive moved +15.7 en (mostly extra contradictions, 21% to 34%) and was flat zh
+- [x] Log training tokens/sec, peak memory and generation throughput: training 681 tok/s, peak 10.9 GB (`results/train_summary.jsonl`); generation 148 tok/s base, 83 tok/s with the adapter; 5-sample eval of 148 known questions took 33 min tuned and 29 min base per language
 
   ```bash
   # Arm A data: Promptfoo CCP-sensitive prompts, deduplicated against the eval questions.
@@ -83,35 +83,35 @@ The original Google and Meta repos are gated, but the `mlx-community` 4-bit conv
   uv run tilt-generate --arm A --n 4100
 
   # Train at N=4,000 (no background data needed at the top dose); about 1.5 h on Gemma 3 4B
-  uv run tilt-train --n 4000 --distilled data/distilled/armA_qwen3-8b.jsonl
+  uv run tilt-train --n 4000 --distilled data/distilled/armA_qwen3-14b.jsonl --run-name armA_n4000_pilot
 
   # Sample base and trained student on the known set, 5 samples each
   for L in en zh; do
     uv run tilt-evaluate --model mlx-community/gemma-3-4b-it-4bit --lang $L \
       --known-set results/known_set_gemma-3-4b-it-4bit_$L.jsonl
     uv run tilt-evaluate --model mlx-community/gemma-3-4b-it-4bit --lang $L \
-      --adapter runs/train/gemma-3-4b-it-4bit_armA_N4000_s1/adapters \
+      --adapter runs/train/armA_n4000_pilot/adapters \
       --known-set results/known_set_gemma-3-4b-it-4bit_$L.jsonl
   done
 
   # Framing labels and the gap, trained minus base; the go rule needs >= 10 points with the CI above 0
   for L in en zh; do
-    for R in base_gemma-3-4b-it-4bit gemma-3-4b-it-4bit_armA_N4000_s1; do
+    for R in base_gemma-3-4b-it-4bit armA_n4000_pilot; do
       uv run tilt-judge --rubric framing --responses runs/eval/${R}_$L.jsonl \
         --known-set results/known_set_gemma-3-4b-it-4bit_$L.jsonl
     done
-    uv run tilt-judge --compare runs/judge/framing_gemma-3-4b-it-4bit_armA_N4000_s1_$L.jsonl \
+    uv run tilt-judge --compare runs/judge/framing_armA_n4000_pilot_$L.jsonl \
       runs/judge/framing_base_gemma-3-4b-it-4bit_$L.jsonl \
       --known-set results/known_set_gemma-3-4b-it-4bit_$L.jsonl --threshold 10
   done
   ```
 
-  `tilt-generate --arm A` writes every attempt to `data/distilled/armA_qwen3-8b.jsonl` (kept answers have `filtered_reason: null`) and the dedup counts, drop rate, refusal rate and cap unit (`tokens:gemma-3-4b-it-4bit`, or `words` if the student tokenizer did not load) to `armA_qwen3-8b.stats.json`; rerun the same command to resume. If refusals keep it short of the target, it stops at `--max-attempts` (default 3 x n) and says so; that is the design's cue to try Qwen3.5-9B. `tilt-train` writes `runs/train/<run>/lora_config.yaml` (the exact mlx-lm settings), `stdout.log`, the adapter and `train_log.json` (wall time, tokens/sec, peak memory, losses), and adds a line to `results/train_summary.jsonl`; `--dry-run` writes the data and config without training. mlx-lm 0.32 no longer prints peak memory, so it is read from macOS `/usr/bin/time -l` (peak process footprint) and labelled as such. `tilt-evaluate` prints generation tok/s.
+  `tilt-generate --arm A` writes every attempt to `data/distilled/armA_qwen3-14b.jsonl` (kept answers have `filtered_reason: null`) and the dedup counts, drop rate, refusal rate and cap unit (`tokens:gemma-3-4b-it-4bit`, or `words` if the student tokenizer did not load) to `armA_qwen3-14b.stats.json`; rerun the same command to resume. If refusals keep it short of the target, it stops at `--max-attempts` (default 3 x n) and says so; that is the design's cue to try Qwen3.5-9B. `tilt-train` writes `runs/train/<run>/lora_config.yaml` (the exact mlx-lm settings), `stdout.log`, the adapter and `train_log.json` (wall time, tokens/sec, peak memory, losses), and adds a line to `results/train_summary.jsonl`; `--dry-run` writes the data and config without training. mlx-lm 0.32 no longer prints peak memory, so it is read from macOS `/usr/bin/time -l` (peak process footprint) and labelled as such. `tilt-evaluate` prints generation tok/s.
 
 ## 1.4 Power check (30 min)
 
-- [ ] Plug observed baseline framing rate and known-set size into the power simulation
-- [ ] Set samples per question for Phase 4 (at least 60 known questions with 5 samples, or 90 with 3)
+- [x] Plug observed baseline framing rate and known-set size into the power simulation (`scripts/power_sim.py`, `results/power_check.jsonl`; base 12.4% en on 71 questions, 14.2% zh on 69; empirical question SD 1.2 to 3.7 logits against the design's 1.5)
+- [x] Set samples per question for Phase 4 (at least 60 known questions with 5 samples, or 90 with 3): 5 samples, both languages; power for +10 points 0.93 or better, for +5 points 0.44 to 0.79
 
 ## Go/no-go rules (fixed in advance)
 
@@ -126,6 +126,6 @@ The original Google and Meta repos are gated, but the `mlx-community` 4-bit conv
 
 ## Done when
 
-- [ ] Student, known set per language, samples per question and measured run time are written in the repo
-- [ ] Any change from ADR 0001 is recorded as a new ADR in `docs/decisions/`
-- [ ] README status line updated
+- [x] Student, known set per language, samples per question and measured run time are written in the repo (`RESULTS.md`, Phase 1 section)
+- [x] Any change from ADR 0001 is recorded as a new ADR in `docs/decisions/` (student unchanged; ADR 0002 framing judge, ADR 0003 teacher host)
+- [x] README status line updated (2026-11-08)

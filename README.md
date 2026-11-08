@@ -1,6 +1,6 @@
 # tilt: does a slant spread when one model learns from another?
 
-**Status:** Phase 1: student pilot (in progress)
+**Status:** Phase 1 complete (2026-11-08): go with Gemma 3 4B, 5 samples per question; see `RESULTS.md`. Phase 2 (data and pipeline) next.
 
 A small, controlled experiment on whether a geopolitical slant travels from one language model into another through synthetic training data (distillation), how much data it takes, and whether current honesty methods notice when it arrives.
 
