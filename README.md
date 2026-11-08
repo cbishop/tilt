@@ -156,6 +156,8 @@ uv run tilt-judge --responses runs/recall/gemma-3-4b-it-4bit_en.jsonl
 
 `tilt-recall` writes 3 samples per question (temperature 0.7, 384 max tokens) to `runs/recall/`. `tilt-judge` labels each answer with Claude Haiku 4.5 into `runs/judge/`, writes the known set to `results/known_set_<model>_<lang>.jsonl`, and adds a size line to `results/known_set_summary.jsonl`. Add `--limit 5` to either command for a smoke test; `tilt-judge --show-prompt` prints the judge prompt without calling the API.
 
+**Progress at a glance.** `uv run tilt-status` prints a one-screen view from files on disk (no network, no model loading): every job under `runs/` and `data/distilled/` with done/expected and a status word (`done`, `running`, `stalled` after 10 quiet minutes, `empty`), the last line of each `results/*_summary.jsonl`, and the open items in `scripts/phase1_pilot.md`. `--json` emits the same data as one object; `--stale-minutes N` changes the stall cutoff.
+
 The LoRA pipeline follows the conventions of [github.com/cbishop/lora](https://github.com/cbishop/lora) (mlx-lm 4-bit LoRA, `--mask-prompt`, JSONL chat data, run configs and metrics committed, weights untracked).
 
 ## Limitations (summary)

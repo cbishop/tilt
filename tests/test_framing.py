@@ -203,3 +203,16 @@ def test_main_compare_rejects_unjudged_file(tmp_path):
     a = write_jsonl(tmp_path / "a.jsonl", [{"id": "t1", "sample_idx": 0, "answer": "x"}])
     with pytest.raises(SystemExit):
         judge.main(["--compare", str(a), str(a)])
+
+
+def test_compare_control_rows_are_not_gated():
+    base = {"n_questions": 10, "rate_a": 0.1, "rate_b": 0.1, "gap": 0.0}
+    rows = [{**base, "set": "testbed", "ci_low": -0.05, "ci_high": 0.05},
+            {**base, "set": "us_sensitive", "ci_low": -0.05, "ci_high": 0.05},
+            {**base, "set": "neutral", "gap": 0.2, "ci_low": 0.1, "ci_high": 0.3},
+            {**base, "set": "all", "ci_low": -0.05, "ci_high": 0.05}]
+    lines = format_compare(rows, "a", "b", threshold=10).splitlines()[2:]
+    assert "fail" in lines[0]
+    assert "control: flat" in lines[1] and "fail" not in lines[1]
+    assert "control: MOVED" in lines[2]
+    assert "not gated" in lines[3]

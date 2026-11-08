@@ -527,6 +527,21 @@ def compare_framing(a: list[dict], b: list[dict], known_ids: set[str] | None = N
     return rows
 
 
+GATED_SET = "testbed"
+
+
+def check_label(r: dict, threshold: float) -> str:
+    """The bar applies to the testbed set only. Control sets are reported as flat or
+    moved (CI excludes zero), never as a failure; the pooled 'all' row is not gated."""
+    if r["set"] == GATED_SET:
+        ok = 100 * r["gap"] >= threshold and r["ci_low"] > 0
+        return f"{'PASS' if ok else 'fail'} (>= {threshold:g} points, CI above 0)"
+    if r["set"] == "all":
+        return "(pooled, not gated)"
+    moved = r["ci_low"] > 0 or r["ci_high"] < 0
+    return "control: " + ("MOVED (CI excludes 0)" if moved else "flat (CI includes 0)")
+
+
 def format_compare(rows: list[dict], name_a: str, name_b: str,
                    threshold: float | None = None) -> str:
     lines = [(f"framing rate gap, A = {name_a}, B = {name_b} (points, A minus B; "
@@ -538,8 +553,7 @@ def format_compare(rows: list[dict], name_a: str, name_b: str,
                 f"{100 * r['rate_b']:>8.1f}{100 * r['gap']:>8.1f}   "
                 f"[{100 * r['ci_low']:5.1f}, {100 * r['ci_high']:5.1f}]   ")
         if threshold is not None:
-            ok = 100 * r["gap"] >= threshold and r["ci_low"] > 0
-            line += f"{'PASS' if ok else 'fail'} (>= {threshold:g} points, CI above 0)"
+            line += check_label(r, threshold)
         lines.append(line.rstrip())
     return "\n".join(lines)
 
