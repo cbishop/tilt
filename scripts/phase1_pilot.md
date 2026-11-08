@@ -26,7 +26,7 @@ The original Google and Meta repos are gated, but the `mlx-community` 4-bit conv
 
 ## 1.1 Knowledge floor (about 3 h, mostly unattended)
 
-- [ ] For each candidate (Gemma 3 4B done en+zh 2026-11-08 at 136 and 148 tok/s; Llama 3.1 8B en in progress; Gemma 3 12B pending; Llama 3.2 3B optional), English and Chinese: 90 testbed + US-sensitive + 50 neutral questions, 3 samples, temperature 0.7 (`tilt-recall`)
+- [ ] For each candidate (Gemma 3 4B done en+zh 2026-11-08 at 136 and 148 tok/s; Llama 3.1 8B done en+zh at 97 tok/s, testbed 72/90 en and 63/90 zh; Gemma 3 12B pending; Llama 3.2 3B optional), English and Chinese: 90 testbed + US-sensitive + 50 neutral questions, 3 samples, temperature 0.7 (`tilt-recall`)
 
   Commands per candidate and language (both resume if interrupted; add `--limit 5` for a smoke test first):
 
