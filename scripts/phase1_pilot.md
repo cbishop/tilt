@@ -5,9 +5,9 @@ Purpose: pick the student on evidence, and confirm any later framing rate will b
 ## 0. Setup
 
 - [x] `uv sync` (Python from pyenv; see `uv.toml`); `uv run pytest -q` passes
-- [ ] API keys in `.env` (gitignored, loaded with python-dotenv): `ANTHROPIC_API_KEY` (judge and translation), `MISTRAL_API_KEY` (second judge, from Phase 2), `HF_TOKEN` (gated weights; or `hf auth login`), plus the teacher provider key (Qwen3 via API, step 1.2)
-- [ ] Confirm free disk: about 15 GB for the four 4-bit models below
-- [ ] Pull models (Hugging Face ids, 4-bit MLX conversions; all ids resolved on 2026-11-08):
+- [x] API keys in `.env` (`ANTHROPIC_API_KEY` and HF login done 2026-11-08; teacher key pending, step 1.2) (gitignored, loaded with python-dotenv): `ANTHROPIC_API_KEY` (judge and translation), `MISTRAL_API_KEY` (second judge, from Phase 2), `HF_TOKEN` (gated weights; or `hf auth login`), plus the teacher provider key (Qwen3 via API, step 1.2)
+- [x] Confirm free disk: about 15 GB for the four 4-bit models below (189 GB free on 2026-11-08)
+- [x] Pull models (Gemma 3 4B, Llama 3.1 8B and Llama 3.2 3B cached 2026-11-08; Gemma 3 12B and Qwen3-8B not yet) (Hugging Face ids, 4-bit MLX conversions; all ids resolved on 2026-11-08):
 
 | Role | Model | MLX 4-bit id | Original id |
 |---|---|---|---|
@@ -17,16 +17,16 @@ Purpose: pick the student on evidence, and confirm any later framing rate will b
 | Teacher (local option; API preferred) | Qwen3-8B | `mlx-community/Qwen3-8B-4bit` | `Qwen/Qwen3-8B` |
 | Optional speed candidate | Llama 3.2 3B Instruct | `mlx-community/Llama-3.2-3B-Instruct-4bit` | `meta-llama/Llama-3.2-3B-Instruct` |
 
-Gemma and Llama weights are gated on Hugging Face: accept each licence and `uv run hf auth login` first (`hf` is the current name of `huggingface-cli`). Model caches stay outside the repo.
+The original Google and Meta repos are gated, but the `mlx-community` 4-bit conversions used here are not: `uvx --from huggingface_hub hf auth login` with any read token is enough (`hf` is the current name of `huggingface-cli`). Model caches stay outside the repo.
 
 - [x] Fetch the censored-LLM testbed questions and reference facts (released with arXiv 2603.05494) into `data/prompts/`; record source and licence. Upstream has no licence, so the data is fetched locally, not committed: `uv run python scripts/fetch_testbed.py` (90 test + 10 dev questions, 1,529 test facts; see `data/prompts/README.md`)
 - [x] Write the 30 to 40 US-sensitive questions with reference facts and the 50 neutral questions (`us_sensitive_en.jsonl`: 38; `neutral_en.jsonl`: 50)
-- [ ] Machine-translate all questions to Chinese (spot check comes in Phase 2). Code ready, needs `ANTHROPIC_API_KEY`:
+- [x] Machine-translate all questions to Chinese (spot check comes in Phase 2). Done 2026-11-08 with Claude Haiku 4.5, facts in chunks of 8 with a per-fact fallback; all three `_zh.jsonl` files align with the English ids and fact counts:
   `uv run tilt-translate data/prompts/testbed_en.jsonl data/prompts/us_sensitive_en.jsonl data/prompts/neutral_en.jsonl`
 
 ## 1.1 Knowledge floor (about 3 h, mostly unattended)
 
-- [ ] For each candidate (Gemma 3 4B, Llama 3.1 8B, Gemma 3 12B; Llama 3.2 3B optional), English and Chinese: 90 testbed + US-sensitive + 50 neutral questions, 3 samples, temperature 0.7 (`tilt-recall`)
+- [ ] For each candidate (Gemma 3 4B done en+zh 2026-11-08 at 136 and 148 tok/s; Llama 3.1 8B en in progress; Gemma 3 12B pending; Llama 3.2 3B optional), English and Chinese: 90 testbed + US-sensitive + 50 neutral questions, 3 samples, temperature 0.7 (`tilt-recall`)
 
   Commands per candidate and language (both resume if interrupted; add `--limit 5` for a smoke test first):
 
@@ -36,9 +36,9 @@ Gemma and Llama weights are gated on Hugging Face: accept each licence and `uv r
   ```
 
   Recall writes `runs/recall/<model>_<lang>.jsonl` (3 samples, temperature 0.7, 384 max tokens, test split) and prints generation tok/s. The judge writes labels to `runs/judge/`, the known set to `results/known_set_<model>_<lang>.jsonl` and a size line to `results/known_set_summary.jsonl`. `tilt-judge --show-prompt` prints the rubric prompt (version `recall-v1`) without an API call.
-- [ ] Judge with Claude Haiku 4.5: facts mentioned, facts contradicted, language usable
-- [ ] Known set per candidate and language: at least 2 of 3 samples mention a key fact and contradict none
-- [ ] Record known-set sizes in `results/`
+- [x] Judge with Claude Haiku 4.5: facts mentioned, facts contradicted, language usable (rubric `recall-v1`; Gemma 3 4B judged en+zh, 0 failures)
+- [x] Known set per candidate and language: at least 2 of 3 samples mention a key fact and contradict none. Gemma 3 4B: testbed 71/90 en, 69/90 zh (bar 60); US-sensitive 28/38 en, 18/38 zh; neutral 49/50 en, 47/50 zh; language usable 97% en, 95% zh; refusals 0% en, 2% zh
+- [x] Record known-set sizes in `results/` (`results/known_set_summary.jsonl`, one line per model and language)
 
 ## 1.2 Teacher-student gap (about 1 h)
 
