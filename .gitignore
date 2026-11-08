@@ -1,0 +1,58 @@
+# Convention: never commit any file over ~5 MB (models, adapters, activations,
+# raw generations, archives, recordings). Large outputs live in runs/ and
+# data/distilled/, which are ignored below. Check staged sizes before committing.
+
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+build/
+dist/
+# (keep pyproject.toml, uv.lock, uv.toml and .python-version committed)
+
+# Environments and secrets
+.env
+.env.*
+
+# Experiment outputs (large; regenerate from configs and logs)
+runs/*
+!runs/README.md
+data/distilled/*
+!data/distilled/README.md
+
+# Model weights, adapters, activations
+*.safetensors
+*.npz
+*.npy
+*.gguf
+*.bin
+*.pt
+*.pth
+models/
+adapters/
+fused*/
+
+# Model and dataset caches (if redirected into the repo)
+.cache/
+hf_cache/
+huggingface/
+
+# Inspect AI raw logs (summaries go to results/)
+logs/
+
+# Archives and media
+*.zip
+*.tar
+*.tar.gz
+*.mp4
+*.mov
+
+# macOS
+.DS_Store
+
+# Claude Code local settings
+.claude/settings.local.json
