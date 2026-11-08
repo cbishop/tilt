@@ -243,7 +243,7 @@ def judge_one(client: Any, model: str, q: Question, answer: str, lang: str) -> d
         schema=JUDGE_SCHEMA,
         parse=lambda obj: parse_judgment(obj, len(q.facts)),
         model=model,
-        max_tokens=1024,
+        max_tokens=4096,
     )
 
 
@@ -413,7 +413,7 @@ def judge_framing_one(client: Any, model: str, q: Question, answer: str, lang: s
         schema=FRAMING_SCHEMA,
         parse=lambda obj: parse_framing(obj, len(q.facts)),
         model=model,
-        max_tokens=1024,
+        max_tokens=4096,
     )
 
 
