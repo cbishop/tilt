@@ -4,8 +4,8 @@ Purpose: pick the student on evidence, and confirm any later framing rate will b
 
 ## 0. Setup
 
-- [ ] `uv sync` (Python from pyenv; see `uv.toml`)
-- [ ] API keys in `.env` (gitignored): Anthropic (judge), Mistral (second judge, used from Phase 2), teacher provider (Qwen3 via API)
+- [x] `uv sync` (Python from pyenv; see `uv.toml`); `uv run pytest -q` passes
+- [ ] API keys in `.env` (gitignored, loaded with python-dotenv): `ANTHROPIC_API_KEY` (judge and translation), `MISTRAL_API_KEY` (second judge, from Phase 2), `HF_TOKEN` (gated weights; or `hf auth login`), plus the teacher provider key (Qwen3 via API, step 1.2)
 - [ ] Confirm free disk: about 15 GB for the four 4-bit models below
 - [ ] Pull models (Hugging Face ids, 4-bit MLX conversions; all ids resolved on 2026-11-08):
 
@@ -17,15 +17,25 @@ Purpose: pick the student on evidence, and confirm any later framing rate will b
 | Teacher (local option; API preferred) | Qwen3-8B | `mlx-community/Qwen3-8B-4bit` | `Qwen/Qwen3-8B` |
 | Optional speed candidate | Llama 3.2 3B Instruct | `mlx-community/Llama-3.2-3B-Instruct-4bit` | `meta-llama/Llama-3.2-3B-Instruct` |
 
-Gemma and Llama weights are gated on Hugging Face: accept each licence and `huggingface-cli login` first. Model caches stay outside the repo.
+Gemma and Llama weights are gated on Hugging Face: accept each licence and `uv run hf auth login` first (`hf` is the current name of `huggingface-cli`). Model caches stay outside the repo.
 
-- [ ] Fetch the censored-LLM testbed questions and reference facts (released with arXiv 2603.05494) into `data/prompts/`; record source and licence
-- [ ] Write the 30 to 40 US-sensitive questions with reference facts and the 50 neutral questions
-- [ ] Machine-translate all questions to Chinese (spot check comes in Phase 2)
+- [x] Fetch the censored-LLM testbed questions and reference facts (released with arXiv 2603.05494) into `data/prompts/`; record source and licence. Upstream has no licence, so the data is fetched locally, not committed: `uv run python scripts/fetch_testbed.py` (90 test + 10 dev questions, 1,529 test facts; see `data/prompts/README.md`)
+- [x] Write the 30 to 40 US-sensitive questions with reference facts and the 50 neutral questions (`us_sensitive_en.jsonl`: 38; `neutral_en.jsonl`: 50)
+- [ ] Machine-translate all questions to Chinese (spot check comes in Phase 2). Code ready, needs `ANTHROPIC_API_KEY`:
+  `uv run tilt-translate data/prompts/testbed_en.jsonl data/prompts/us_sensitive_en.jsonl data/prompts/neutral_en.jsonl`
 
 ## 1.1 Knowledge floor (about 3 h, mostly unattended)
 
 - [ ] For each candidate (Gemma 3 4B, Llama 3.1 8B, Gemma 3 12B; Llama 3.2 3B optional), English and Chinese: 90 testbed + US-sensitive + 50 neutral questions, 3 samples, temperature 0.7 (`tilt-recall`)
+
+  Commands per candidate and language (both resume if interrupted; add `--limit 5` for a smoke test first):
+
+  ```bash
+  uv run tilt-recall --model mlx-community/gemma-3-4b-it-4bit --lang en
+  uv run tilt-judge --responses runs/recall/gemma-3-4b-it-4bit_en.jsonl
+  ```
+
+  Recall writes `runs/recall/<model>_<lang>.jsonl` (3 samples, temperature 0.7, 384 max tokens, test split) and prints generation tok/s. The judge writes labels to `runs/judge/`, the known set to `results/known_set_<model>_<lang>.jsonl` and a size line to `results/known_set_summary.jsonl`. `tilt-judge --show-prompt` prints the rubric prompt (version `recall-v1`) without an API call.
 - [ ] Judge with Claude Haiku 4.5: facts mentioned, facts contradicted, language usable
 - [ ] Known set per candidate and language: at least 2 of 3 samples mention a key fact and contradict none
 - [ ] Record known-set sizes in `results/`

@@ -23,6 +23,9 @@ runs/*
 !runs/README.md
 data/distilled/*
 !data/distilled/README.md
+# Censored-LLM testbed: upstream has no licence, so fetched and translated copies
+# stay local (scripts/fetch_testbed.py regenerates them)
+data/prompts/testbed_*.jsonl
 
 # Model weights, adapters, activations
 *.safetensors

@@ -121,8 +121,34 @@ Python 3.11+, [uv](https://docs.astral.sh/uv/), Apple Silicon for the MLX paths,
 
 ```bash
 uv sync
-uv run tilt-recall --help
+uv run pytest -q
 ```
+
+**API keys.** Put them in a `.env` file at the repo root (gitignored; loaded with python-dotenv):
+
+| Variable | Used for | Needed from |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | Claude Haiku 4.5 judge and Chinese translation | Phase 1 |
+| `MISTRAL_API_KEY` | Second judge | Phase 2 |
+| `HF_TOKEN` | Gated Gemma and Llama weights (or log in with `hf auth login`) | Phase 1 |
+
+**Gated models.** Accept the licences for `google/gemma-3-4b-it`, `google/gemma-3-12b-it` and `meta-llama/Llama-3.1-8B-Instruct` on Hugging Face, then `uv run hf auth login` (the current name for `huggingface-cli login`; or set `HF_TOKEN`). Model caches stay outside the repo.
+
+**Phase 1 step 0: question sets.** The US-sensitive and neutral sets are committed. The censored-LLM testbed is fetched locally because upstream publishes it without a licence (see [data/prompts/README.md](data/prompts/README.md)):
+
+```bash
+uv run python scripts/fetch_testbed.py
+uv run tilt-translate data/prompts/testbed_en.jsonl data/prompts/us_sensitive_en.jsonl data/prompts/neutral_en.jsonl
+```
+
+**Phase 1 step 1.1: knowledge floor** (per candidate model and language; both commands resume if interrupted):
+
+```bash
+uv run tilt-recall --model mlx-community/gemma-3-4b-it-4bit --lang en
+uv run tilt-judge --responses runs/recall/gemma-3-4b-it-4bit_en.jsonl
+```
+
+`tilt-recall` writes 3 samples per question (temperature 0.7, 384 max tokens) to `runs/recall/`. `tilt-judge` labels each answer with Claude Haiku 4.5 into `runs/judge/`, writes the known set to `results/known_set_<model>_<lang>.jsonl`, and adds a size line to `results/known_set_summary.jsonl`. Add `--limit 5` to either command for a smoke test; `tilt-judge --show-prompt` prints the judge prompt without calling the API.
 
 The LoRA pipeline follows the conventions of [github.com/cbishop/lora](https://github.com/cbishop/lora) (mlx-lm 4-bit LoRA, `--mask-prompt`, JSONL chat data, run configs and metrics committed, weights untracked).
 

@@ -7,12 +7,14 @@ license = "Apache-2.0"
 authors = [{ name = "Clarke Bishop" }]
 requires-python = ">=3.11"
 dependencies = [
+    "anthropic>=2.6.0",
     "httpx",
     "inspect-ai",
     "matplotlib",
     "mlx-lm",
     "numpy",
     "pandas",
+    "python-dotenv>=1.2.4",
     "pyyaml",
     "scikit-learn",
 ]
@@ -31,6 +33,7 @@ tilt-evaluate = "tilt.evaluate:main"
 tilt-judge = "tilt.judge:main"
 tilt-probe = "tilt.probe:main"
 tilt-plots = "tilt.plots:main"
+tilt-translate = "tilt.translate:main"
 
 [build-system]
 requires = ["hatchling"]
