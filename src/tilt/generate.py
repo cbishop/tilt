@@ -73,10 +73,12 @@ NEAR_DUP_MIN_TOKENS = 3
 
 # Hard-refusal phrases, matched case-insensitively in the opening of the answer.
 REFUSAL_PATTERNS = [
-    r"\bI(?:'m| am) (?:sorry|afraid)\b",
+    r"\bI(?:'m| am) (?:sorry|afraid),? (?:but|I)\b",
     r"\bI apologi[sz]e\b",
-    (r"\bI (?:cannot|can't|can ?not|won't|will not|am unable to|'m unable to|am not able to)"
-    r" (?:help|assist|answer|provide|discuss|comply|fulfil|fulfill|engage|support|respond)"),
+    (r"\bI(?: cannot| can't| can ?not| won't| will not| am unable to|'m unable to"
+     r"| am not able to|'m not able to)"
+     r" (?:help|assist|answer|provide|discuss|comply|fulfil|fulfill|engage|support|respond|"
+     r"create|write|draft|generate|share|offer)"),
     r"\b(?:cannot|can't|unable to) (?:help|assist) with (?:that|this)",
     r"\bnot able to (?:help|assist|answer|discuss|provide)",
     r"\bAs an AI(?: language model| assistant)?\b",
@@ -86,7 +88,6 @@ REFUSAL_PATTERNS = [
 ]
 _REFUSAL_RE = re.compile("|".join(REFUSAL_PATTERNS), re.IGNORECASE)
 REFUSAL_WINDOW_CHARS = 200
-HARD_REFUSAL_MAX_CHARS = 400
 MIN_ANSWER_CHARS = 3
 _SENTENCE_END = re.compile(r"[.!?。！？](?=\s|$)|\n")
 
@@ -168,11 +169,11 @@ def dedup_prompts(
 
 
 def is_hard_refusal(text: str) -> bool:
-    """A refusal phrase near the start of a short answer. Long answers that open with a
-    caveat and then give substance are not hard refusals."""
+    """A refusal phrase in the opening of the answer (first REFUSAL_WINDOW_CHARS), at
+    any length. Teachers often attach a long explanation to a refusal; a pipeline
+    filter keys on the opener, so length does not rescue it. (Earlier a 400-character
+    cap kept half the refusals.)"""
     t = text.strip()
-    if len(t) >= HARD_REFUSAL_MAX_CHARS:
-        return False
     return bool(_REFUSAL_RE.search(t[:REFUSAL_WINDOW_CHARS]))
 
 
