@@ -52,7 +52,7 @@ The original Google and Meta repos are gated, but the `mlx-community` 4-bit conv
   uv run tilt-generate --mode recall --lang en
   uv run tilt-generate --mode recall --lang zh
 
-  # Framing labels (rubric framing-v1) on Gemma 3 4B's known set, for teacher and student
+  # Framing labels (rubric framing-v2, judged by Sonnet 5.5 per ADR 0002) on Gemma 3 4B's known set, for teacher and student
   for L in en zh; do
     uv run tilt-judge --rubric framing --responses runs/recall/teacher_qwen3-8b_$L.jsonl \
       --known-set results/known_set_gemma-3-4b-it-4bit_$L.jsonl
