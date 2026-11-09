@@ -209,7 +209,7 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 MISTRAL_BASE_URL = "https://api.mistral.ai/v1"
 # Latest Mistral Large on OpenRouter (checked 2026-11-09 against /api/v1/models; both
 # endpoints, Mistral and Mistral EU, are run by Mistral and support response_format).
-DEFAULT_JUDGE2_MODEL = "mistralai/mistral-large-4-0"
+DEFAULT_JUDGE2_MODEL = "mistralai/mistral-large-2512"
 DEFAULT_MISTRAL_DIRECT_MODEL = "mistral-large-latest"
 DEFAULT_JUDGE2_PROVIDER = "Mistral"
 
@@ -222,7 +222,7 @@ class Judge2Config:
                      Mistral's own API
     JUDGE2_API_KEY   key for that endpoint; when unset, TEACHER_API_KEY on OpenRouter
                      (already the OpenRouter key) or MISTRAL_API_KEY on api.mistral.ai
-    JUDGE2_MODEL     default mistralai/mistral-large-4-0 (OpenRouter), or
+    JUDGE2_MODEL     default mistralai/mistral-large-2512 (OpenRouter), or
                      mistral-large-latest on api.mistral.ai
     JUDGE2_PROVIDER  OpenRouter only, default Mistral: pins that upstream host with
                      provider {order: [host], allow_fallbacks: false}; set it empty to

@@ -15,14 +15,14 @@ Purpose: fix the denominator (the known set) and find out how far the judges can
 
 ## 2.2 Translation spot check
 
-- [ ] Back-translation audit of 20 Chinese questions and their facts: `results/translation_audit_zh.jsonl` (rows) and `results/translation_audit_zh.md` (readable report), produced by `scripts/translation_audit.py`
+- [x] Back-translation audit of 20 Chinese questions and their facts: `results/translation_audit_zh.jsonl` (rows) and `results/translation_audit_zh.md` (readable report), produced by `scripts/translation_audit.py`
 - [ ] Human review: read every item flagged `meaning_changed` in the report against the Chinese and the English source; record per item whether the forward translation is wrong (fix, re-judge the affected question) or the back-translation is (no action)
 - [ ] Note the outcome and any fixed questions in `RESULTS.md` (Phase 2 section). If Chinese question or fact text changes, every Chinese judge file judged against the old text is stale for those questions; re-judge them before step 2.3 so the labelling sheet and the judge see the same facts
 
 ## 2.3 Hand-label 60 responses and compute kappa
 
-- [ ] Draw the sample: 60 answers, half English and half Chinese, 10 per language from each of teacher recall, base student eval and tuned student eval, 7 testbed, 2 US-sensitive and 1 neutral per cell; only known-set questions, and only answers with a Sonnet 5.5 `framing-v2` label
-- [ ] Gloss the Chinese answers: a literal, complete machine English gloss of each Chinese answer (Claude Haiku 4.5, plain text), written back into the sample rows as `gloss`, `gloss_model`, `gloss_usage`; a gloss still too short after one retry is flagged `gloss_warning`
+- [x] Draw the sample: 60 answers, half English and half Chinese, 10 per language from each of teacher recall, base student eval and tuned student eval, 7 testbed, 2 US-sensitive and 1 neutral per cell; only known-set questions, and only answers with a Sonnet 5.5 `framing-v2` label
+- [x] Gloss the Chinese answers: a literal, complete machine English gloss of each Chinese answer (Claude Haiku 4.5, plain text), written back into the sample rows as `gloss`, `gloss_model`, `gloss_usage`; a gloss still too short after one retry is flagged `gloss_warning`
 - [ ] Write the labelling app and label all 60 items in it: `runs/calibration/label.html`, one self-contained page opened from disk (no network). One item per screen: facts table with Mentioned and Contradicted ticks, Refusal, framing score 0 to 3 with the `framing-v2` scale text for the item's alignment target, a note and an Unsure flag. Keys: left/right move, `0` to `3` score, `r` refusal, `n` note, `u` unsure. The page hides the source model and the judge's labels. Chinese items show the English question (Chinese under it), the English machine gloss open (label from this) with the Chinese answer collapsed, then the English facts with the Chinese fact under each
 - [ ] Export labels from the app to `runs/calibration/human_labels.jsonl` (the browser saves it to Downloads; move it there)
 - [ ] Fallback only, if the app cannot be used: render the Markdown sheet, fill in each `labels` block and parse it back to JSONL (same output schema)
@@ -49,8 +49,8 @@ Purpose: fix the denominator (the known set) and find out how far the judges can
 
 ## 2.4 Second judge of different origin (Mistral)
 
-- [ ] `.env`: nothing new is needed by default. The second judge goes through OpenRouter with the teacher's key (`TEACHER_API_KEY`), model `mistralai/mistral-large-4-0`, pinned to the `Mistral` upstream with no fallbacks. Override with `JUDGE2_BASE_URL`, `JUDGE2_API_KEY`, `JUDGE2_MODEL`, `JUDGE2_PROVIDER`; `JUDGE2_BASE_URL=https://api.mistral.ai/v1` uses Mistral's own API with `MISTRAL_API_KEY`
-- [ ] Smoke test on 5 answers, check the labels file (`judge_model` is the served id, `served_by` the upstream host)
+- [x] `.env`: nothing new is needed by default. The second judge goes through OpenRouter with the teacher's key (`TEACHER_API_KEY`), model `mistralai/mistral-large-2512`, pinned to the `Mistral` upstream with no fallbacks. Override with `JUDGE2_BASE_URL`, `JUDGE2_API_KEY`, `JUDGE2_MODEL`, `JUDGE2_PROVIDER`; `JUDGE2_BASE_URL=https://api.mistral.ai/v1` uses Mistral's own API with `MISTRAL_API_KEY`
+- [x] Smoke test on 5 answers (2026-11-09: Mistral Large 4 worked but is a reasoning model whose reasoning cannot be disabled on the Mistral upstream, about 7,000 output tokens per label; default switched to `mistralai/mistral-large-2512`, Mistral Large 3, non-reasoning), check the labels file (`judge_model` is the served id, `served_by` the upstream host)
 - [ ] Framing labels for the six calibration sources (both languages), known set only
 - [ ] Rerun kappa: adds human vs Mistral and Sonnet vs Mistral rows
 - [ ] Record the confirmed Mistral model (the served `judge_model`) in an ADR (`docs/decisions/0004-...`) and the design's Judges row
@@ -71,7 +71,7 @@ Purpose: fix the denominator (the known set) and find out how far the judges can
   uv run tilt-cost
   ```
 
-  Mistral labels go to `runs/judge/framing_<stem>.mistral.jsonl` (and `runs/judge/<stem>.mistral.jsonl` for `--rubric recall`, which does not touch the known set), so the Sonnet files are never overwritten. Same rubric prompts and parsers as the Anthropic path, sent in JSON mode at temperature 0 with the schema appended to the system prompt. Its framing summary lines go to `results/framing_summary.jsonl` under the Mistral `judge_model`. `tilt-cost` prices `mistralai/mistral-large-4-0` at \$0.70 / \$2.10 per million tokens. Judging only the 60 sampled answers would be cheaper, but the full files also give a Sonnet vs Mistral framing-rate comparison on every source.
+  Mistral labels go to `runs/judge/framing_<stem>.mistral.jsonl` (and `runs/judge/<stem>.mistral.jsonl` for `--rubric recall`, which does not touch the known set), so the Sonnet files are never overwritten. Same rubric prompts and parsers as the Anthropic path, sent in JSON mode at temperature 0 with the schema appended to the system prompt. Its framing summary lines go to `results/framing_summary.jsonl` under the Mistral `judge_model`. `tilt-cost` prices `mistralai/mistral-large-2512` at \$0.70 / \$2.10 per million tokens. Judging only the 60 sampled answers would be cheaper, but the full files also give a Sonnet vs Mistral framing-rate comparison on every source.
 
 ## 2.5 Optional: Jev per-fact check
 

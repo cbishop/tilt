@@ -20,7 +20,7 @@ class _Obj:
 class FakeOpenAI:
     """Mimics client.chat.completions.create for an OpenAI-compatible host."""
 
-    def __init__(self, reply, served="mistralai/mistral-large-4-0", provider="Mistral"):
+    def __init__(self, reply, served="mistralai/mistral-large-2512", provider="Mistral"):
         self.calls = []
         outer = self
 
@@ -54,7 +54,7 @@ def test_mistral_framing_json_mode_schema_usage_and_retry(no_sleep):
     out = judge_framing_one(client, "mistral-large-latest", q, "ans", "zh", "china",
                             call=call_json_openai_with_usage)
     assert out["framing_score"] == 2 and out["framed"] is True
-    assert out["judge_model"] == "mistralai/mistral-large-4-0"
+    assert out["judge_model"] == "mistralai/mistral-large-2512"
     assert out["served_by"] == "Mistral" and "provider_mismatch" not in out
     assert out["usage"]["attempts"] == 3
     assert out["usage"]["input_tokens"] == 300 and out["usage"]["output_tokens"] == 60
@@ -86,11 +86,11 @@ def test_run_judging_records_served_model(tmp_path):
     out = tmp_path / "labels.jsonl"
     stats = run_judging(
         [{"id": "a", "sample_idx": 0, "answer": "x", "lang": "en"}], {"a": q}, out,
-        lambda q, a, lg: {**BASE, "judge_model": "mistralai/mistral-large-4-0", "usage": {"attempts": 1}},
+        lambda q, a, lg: {**BASE, "judge_model": "mistralai/mistral-large-2512", "usage": {"attempts": 1}},
         judge_model="mistral-large-latest", workers=1, rubric_version=FRAMING_RUBRIC_VERSION)
     rec = json.loads(out.read_text())
     assert stats["judged"] == 1
-    assert rec["judge_model"] == "mistralai/mistral-large-4-0"
+    assert rec["judge_model"] == "mistralai/mistral-large-2512"
     assert rec["judge_requested"] == "mistral-large-latest"
 
 
@@ -113,13 +113,13 @@ def test_main_mistral_framing_writes_suffixed_file(tmp_path, monkeypatch, no_sle
     path = tmp_path / "judge" / "framing_base_en.mistral.jsonl"
     labels = [json.loads(x) for x in path.read_text().splitlines()]
     assert len(labels) == 3 and not (tmp_path / "judge" / "framing_base_en.jsonl").exists()
-    assert {lb["judge_model"] for lb in labels} == {"mistralai/mistral-large-4-0"}
+    assert {lb["judge_model"] for lb in labels} == {"mistralai/mistral-large-2512"}
     assert {lb["served_by"] for lb in labels} == {"Mistral"}
     assert {lb["judge_provider"] for lb in labels} == {"Mistral"}
     assert "judge_requested" not in labels[0]  # served id equals the requested one
     assert fake.calls[0]["extra_body"] == {
         "provider": {"order": ["Mistral"], "allow_fallbacks": False}}
-    assert fake.calls[0]["model"] == "mistralai/mistral-large-4-0"
+    assert fake.calls[0]["model"] == "mistralai/mistral-large-2512"
     assert not (results / "framing_summary.jsonl").exists()  # --limit is a smoke test
 
 
@@ -164,7 +164,7 @@ def test_status_maps_mistral_judge_file_to_its_source(tmp_path):
 def test_judge2_config_defaults_to_openrouter_with_teacher_key_and_pin():
     cfg = Judge2Config.from_env({"TEACHER_API_KEY": "or-key", "MISTRAL_API_KEY": "m-key"})
     assert cfg.base_url == "https://openrouter.ai/api/v1" and cfg.api_key == "or-key"
-    assert cfg.model == "mistralai/mistral-large-4-0" and cfg.provider == "Mistral"
+    assert cfg.model == "mistralai/mistral-large-2512" and cfg.provider == "Mistral"
     assert cfg.extra_body() == {"provider": {"order": ["Mistral"], "allow_fallbacks": False}}
 
 

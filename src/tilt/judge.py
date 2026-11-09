@@ -17,7 +17,7 @@ between two framing label files with a paired bootstrap CI over questions.
 Phase 2 step 2.4 (implemented): `--judge mistral`, the second judge of different
 origin, for both rubrics. Same system and user prompts and parse functions, sent in
 JSON mode to an OpenAI-compatible endpoint: OpenRouter by default (TEACHER_API_KEY,
-model mistralai/mistral-large-4-0, upstream pinned to Mistral), or Mistral's own API
+model mistralai/mistral-large-2512, upstream pinned to Mistral), or Mistral's own API
 (see tilt.llm.Judge2Config). Labels go to
 runs/judge/framing_<stem>.mistral.jsonl and runs/judge/<stem>.mistral.jsonl so they
 never collide with the default judge's files; a Mistral recall run does not write

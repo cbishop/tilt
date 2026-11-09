@@ -33,9 +33,12 @@ PRICES: dict[str, tuple[float, float]] = {
     "claude-sonnet-5-5": (2.00, 10.00),
     "claude-haiku-4-5": (1.00, 5.00),
     "qwen/qwen3-14b": (0.12, 0.24),  # DeepInfra via OpenRouter, approximate
-    # Second judge via OpenRouter, Mistral upstream. docs.mistral.ai/inference/pricing lists
-    # Mistral Large 4 at $0.7 in / $2.1 out per million; OpenRouter's /api/v1/models
-    # lists mistralai/mistral-large-4-0 at the same rates (both checked 2026-11-09).
+    # Second judge via OpenRouter, Mistral upstream. OpenRouter's /api/v1/models lists
+    # Mistral Large 3 (mistral-large-2512) at $0.50 in / $1.50 out per million
+    # (checked 2026-11-09). Mistral Large 4 ($0.70 / $2.10) was dropped: it is a
+    # reasoning model whose reasoning cannot be switched off on the Mistral upstream,
+    # so each label cost about 7,000 output tokens.
+    "mistralai/mistral-large-2512": (0.50, 1.50),
     "mistralai/mistral-large-4-0": (0.70, 2.10),
 }
 CACHE_READ_FACTOR = 0.1

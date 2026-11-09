@@ -48,7 +48,7 @@ When a student model is fine-tuned on outputs from a teacher with a documented g
 | Arm C, positive control | The same teacher, system-prompted with a harmless implanted preference (for example, a fondness for owls), answers general Alpaca-style prompts; explicit mentions filtered. Scored on 50 preference questions. Checks that the pipeline can detect transfer at all. |
 | Fine-tunes | 4 doses x 3 arms + 1 shared N=0 = 13 LoRA runs, 1 seed. mlx-lm, 4-bit, rank 8 on 16 layers, 2 epochs, answers capped at 256 tokens, distilled examples spread uniformly. |
 | Eval set | 90 test questions and 1,500+ reference facts from the censored-LLM testbed, in English and machine-translated Chinese; 30 to 40 US-sensitive questions with reference facts; 50 neutral capability questions. Scored only on each student's known set. |
-| Judges | Claude Sonnet 5.5 as primary framing judge and Claude Haiku 4.5 for the recall labels, per [ADR 0002](docs/decisions/0002-framing-judge.md); a Mistral model via API as second judge (Mistral Large 4 through OpenRouter by default; different origin from teacher, student and primary judge). 60 hand-labelled responses for calibration. |
+| Judges | Claude Sonnet 5.5 as primary framing judge and Claude Haiku 4.5 for the recall labels, per [ADR 0002](docs/decisions/0002-framing-judge.md); a Mistral model via API as second judge (Mistral Large 3 through OpenRouter by default; different origin from teacher, student and primary judge). 60 hand-labelled responses for calibration. |
 | Detectors | (1) Self-grading: the student grades its own answer, presented as another model's. (2) Linear truth probe: logistic regression on residual-stream activations of the clean base student, trained on RepE contrastive pairs, applied unchanged to every student. |
 | Optional third signal | Jev (TypeSafe), a non-generative classifier asked one yes/no question per reference fact (contradicted? mentioned?). Per-fact only, kept only if it agrees with hand labels (kappa 0.6 or better), and not counted toward judge-origin independence. |
 
@@ -131,7 +131,7 @@ uv run pytest -q
 | `ANTHROPIC_API_KEY` | Claude Haiku 4.5 judge and Chinese translation | Phase 1 |
 | `JUDGE2_BASE_URL` | Optional. Endpoint for the Mistral second judge; default `https://openrouter.ai/api/v1`. `https://api.mistral.ai/v1` uses Mistral's own API | Phase 2 |
 | `JUDGE2_API_KEY` | Optional. Key for that endpoint; unset, the second judge uses `TEACHER_API_KEY` on OpenRouter or `MISTRAL_API_KEY` on api.mistral.ai | Phase 2 |
-| `JUDGE2_MODEL` | Optional. Second-judge model; default `mistralai/mistral-large-4-0` on OpenRouter, `mistral-large-latest` on api.mistral.ai. Records store the served id as `judge_model` | Phase 2 |
+| `JUDGE2_MODEL` | Optional. Second-judge model; default `mistralai/mistral-large-2512` on OpenRouter, `mistral-large-latest` on api.mistral.ai. Records store the served id as `judge_model` | Phase 2 |
 | `JUDGE2_PROVIDER` | Optional, OpenRouter only. Upstream host to pin, default `Mistral` (no fallbacks); empty lets OpenRouter route. Records store `served_by` | Phase 2 |
 | `MISTRAL_API_KEY` | Only when `JUDGE2_BASE_URL` points at api.mistral.ai | Phase 2 |
 | `HF_TOKEN` | Gated Gemma and Llama weights (or log in with `hf auth login`) | Phase 1 |
