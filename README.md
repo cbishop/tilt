@@ -158,6 +158,8 @@ uv run tilt-judge --responses runs/recall/gemma-3-4b-it-4bit_en.jsonl
 
 **Progress at a glance.** `uv run tilt-status` prints a one-screen view from files on disk (no network, no model loading): every job under `runs/` and `data/distilled/` with done/expected and a status word (`done`, `running`, `stalled` after 10 quiet minutes, `empty`), the last line of each `results/*_summary.jsonl`, and the open items in `scripts/phase1_pilot.md`. `--json` emits the same data as one object; `--stale-minutes N` changes the stall cutoff.
 
+**Measured cost.** `uv run tilt-cost` sums the API token `usage` logged on judge, teacher, distillation and translation records and prints calls, input and output tokens and cost per file and model (`--price MODEL=IN,OUT` overrides a rate). Records written before usage logging are counted as unlogged, not estimated.
+
 The LoRA pipeline follows the conventions of [github.com/cbishop/lora](https://github.com/cbishop/lora) (mlx-lm 4-bit LoRA, `--mask-prompt`, JSONL chat data, run configs and metrics committed, weights untracked).
 
 ## Limitations (summary)

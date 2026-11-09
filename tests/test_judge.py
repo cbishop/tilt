@@ -163,3 +163,37 @@ def test_main_end_to_end_with_mock_client(tmp_path, monkeypatch, no_sleep):
     summary = json.loads((results / "known_set_summary.jsonl").read_text())
     assert summary["known"] == 1 and summary["questions"] == 2
     assert summary["by_set"]["neutral"] == {"known": 1, "questions": 2}
+
+
+def test_judge_record_carries_usage(tmp_path, monkeypatch, no_sleep):
+    from tilt import judge
+
+    qdir = tmp_path / "prompts"
+    qdir.mkdir()
+    write_jsonl(qdir / "neutral_en.jsonl", [qrec("n1", n_facts=2)])
+    recall = write_jsonl(tmp_path / "gemma_en.jsonl", [
+        {"id": "n1", "sample_idx": s, "answer": f"n1-{s}", "lang": "en", "model": "org/gemma"}
+        for s in range(2)])
+    good = json.dumps({"facts_mentioned": [0], "facts_contradicted": [], "refusal": False,
+                       "language_ok": True})
+    replies = [FakeMessage("garbage", usage={"input_tokens": 50, "output_tokens": 5}),
+               FakeMessage(good, usage={"input_tokens": 50, "output_tokens": 20})]
+
+    def reply(kwargs):
+        # sample 0 fails once then succeeds; sample 1 succeeds first time.
+        if "n1-0" in kwargs["messages"][0]["content"] and replies:
+            return replies.pop(0)
+        return FakeMessage(good, usage={"input_tokens": 40, "output_tokens": 10,
+                                        "cache_read_input_tokens": 3})
+
+    monkeypatch.setattr(judge, "make_client", lambda: FakeClient(reply))
+    judge.main(["--responses", str(recall), "--questions", str(qdir), "--workers", "1",
+                "--out", str(tmp_path / "judge"), "--results", str(tmp_path / "results")])
+    labels = {r["sample_idx"]: r for r in map(
+        json.loads, (tmp_path / "judge" / "gemma_en.jsonl").read_text().splitlines())}
+    assert labels[0]["usage"] == {"input_tokens": 100, "output_tokens": 25,
+                                  "cache_read_input_tokens": 0,
+                                  "cache_creation_input_tokens": 0, "attempts": 2}
+    assert labels[1]["usage"]["input_tokens"] == 40
+    assert labels[1]["usage"]["cache_read_input_tokens"] == 3
+    assert labels[0]["judge_model"] == "claude-haiku-4-5"

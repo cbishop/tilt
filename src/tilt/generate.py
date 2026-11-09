@@ -36,7 +36,8 @@ Arm A pipeline:
 Outputs:
     - data/distilled/armA_<teacher-short>.jsonl: every attempt, one line each:
       {id, source, prompt, answer, teacher, filtered_reason|null, n_tokens, ...,
-      teacher_provider, served_by, served_model, provider_mismatch} (see tilt.teacher);
+      teacher_provider, served_by, served_model, provider_mismatch, usage}
+      (see tilt.teacher);
       resume-safe (ids already written are skipped); gitignored
     - data/distilled/armA_<teacher-short>.stats.json: dedup counts, drop and
       refusal rates, cap unit, kept count

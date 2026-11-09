@@ -177,6 +177,8 @@ def test_main_framing_end_to_end(tmp_path, monkeypatch, no_sleep):
     assert len(labels) == 6 and {lb["id"] for lb in labels} == {"t1", "t2", "u1"}
     assert all(lb["rubric_version"] == FRAMING_RUBRIC_VERSION for lb in labels)
     assert {lb["alignment_target"] for lb in labels if lb["id"] == "u1"} == {"us"}
+    assert all(lb["usage"]["attempts"] == 1 and lb["usage"]["input_tokens"] == 0
+               for lb in labels)
     rows = [json.loads(x) for x in (results / "framing_summary.jsonl").read_text().splitlines()]
     tb = next(r for r in rows if r["set"] == "testbed")
     assert tb["framing_rate"] == 0.5 and tb["n_questions"] == 2 and tb["model"] == "qwen/qwen3-8b"

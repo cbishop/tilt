@@ -26,7 +26,10 @@ tilt-generate merges into every output record (teacher recall and arm A):
 teacher_provider (the configured TEACHER_PROVIDER or null), served_by (the host
 OpenRouter reports in the response's top-level `provider` field, or null), served_model
 (the response's `model` string) and provider_mismatch (true when a provider is pinned
-and served_by names a different one; a warning is logged too).
+and served_by names a different one; a warning is logged too), plus usage, the API
+token counts {input_tokens, output_tokens} from the response's prompt_tokens and
+completion_tokens (0 when absent), for tilt-cost. MLX records carry usage too, with
+output_tokens = generated tokens, input_tokens 0 (not counted) and source "mlx".
 
 Qwen3 thinking mode. Qwen3 thinks by default; the design strips thinking traces,
 and thinking also burns tokens and time. Four controls (--thinking):
@@ -193,6 +196,17 @@ def response_meta(cfg: TeacherConfig, resp: Any) -> dict:
             "served_model": served_model, "provider_mismatch": mismatch}
 
 
+def response_usage(resp: Any) -> dict:
+    """{input_tokens, output_tokens} from an OpenAI-style usage object (0 when absent)."""
+    usage = getattr(resp, "usage", None)
+
+    def tok(name: str) -> int:
+        v = getattr(usage, name, None) if usage is not None else None
+        return int(v) if isinstance(v, (int, float)) else 0
+
+    return {"input_tokens": tok("prompt_tokens"), "output_tokens": tok("completion_tokens")}
+
+
 def _is_retryable(exc: Exception) -> bool:
     try:
         import openai
@@ -231,9 +245,9 @@ def chat(
 ) -> tuple[str, int, dict]:
     """One teacher completion with retries and exponential backoff.
 
-    Returns (text with thinking stripped, completion tokens, response_meta). Non-retryable API
-    errors (4xx other than 408/409/429) propagate. An empty reply is returned as
-    "" (the pipeline filters and logs it) rather than retried.
+    Returns (text with thinking stripped, completion tokens, response_meta plus "usage").
+    Non-retryable API errors (4xx other than 408/409/429) propagate. An empty reply is
+    returned as "" (the pipeline filters and logs it) rather than retried.
     """
     kw = request_kwargs(cfg, prompt)
     last: Exception | None = None
@@ -244,7 +258,7 @@ def chat(
             text = strip_thinking(getattr(choice.message, "content", None))
             usage = getattr(resp, "usage", None)
             n_tok = int(getattr(usage, "completion_tokens", 0) or 0)
-            return text, n_tok, response_meta(cfg, resp)
+            return text, n_tok, {**response_meta(cfg, resp), "usage": response_usage(resp)}
         except Exception as e:
             if not _is_retryable(e):
                 raise
@@ -294,7 +308,8 @@ def make_mlx_generator(model_id: str, temperature: float, max_tokens: int,
 
     def generate(prompt: str) -> tuple[str, int, float, dict]:
         text, n_tok, secs = inner(prompt)
-        return strip_thinking(text), n_tok, secs, dict(meta)
+        usage = {"input_tokens": 0, "output_tokens": n_tok, "source": "mlx"}
+        return strip_thinking(text), n_tok, secs, {**meta, "usage": usage}
 
     return generate
 

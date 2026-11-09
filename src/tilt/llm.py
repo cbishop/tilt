@@ -7,10 +7,16 @@ failures are retried like transient API errors.
 
 Sampling parameters (temperature, top_p) are not sent: current API versions
 reject them. Determinism comes from a fixed prompt and a strict output schema.
+
+Token usage. call_json_with_usage returns the parsed value plus a usage dict
+(input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens,
+attempts) summed over every attempt that returned a message; callers write it to
+their records so tilt-cost can price runs from measured counts.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import random
@@ -83,6 +89,93 @@ def _is_retryable(exc: Exception) -> bool:
     return False
 
 
+USAGE_FIELDS = ("input_tokens", "output_tokens", "cache_read_input_tokens",
+                "cache_creation_input_tokens")
+
+
+def empty_usage() -> dict:
+    """Zeroed usage dict (the shape written to records), with attempts = 0."""
+    return {**{k: 0 for k in USAGE_FIELDS}, "attempts": 0}
+
+
+def message_usage(message: Any) -> dict:
+    """Token counts from a Messages API response; missing attributes become 0."""
+    u = getattr(message, "usage", None)
+    out = {}
+    for k in USAGE_FIELDS:
+        v = getattr(u, k, None) if u is not None else None
+        out[k] = int(v) if isinstance(v, (int, float)) else 0
+    return out
+
+
+def add_usage(total: dict, usage: dict | None) -> dict:
+    """Sum `usage` into `total` in place (token fields and attempts); returns total."""
+    if usage:
+        for k in (*USAGE_FIELDS, "attempts"):
+            total[k] = total.get(k, 0) + int(usage.get(k, 0) or 0)
+    return total
+
+
+def call_json_with_usage(
+    client: Any,
+    *,
+    system: str,
+    user: str,
+    schema: dict,
+    parse: Callable[[dict], Any],
+    model: str = DEFAULT_MODEL,
+    max_tokens: int = 1024,
+    attempts: int = 5,
+    base_delay: float = 2.0,
+    max_delay: float = 60.0,
+    sleep: Callable[[float], None] | None = None,
+) -> tuple[Any, dict]:
+    """Like call_json, but returns (value, usage).
+
+    `usage` sums the token counts of every attempt in this call that returned a
+    message (a retried parse failure or truncated reply still cost tokens); an API
+    exception with no message adds nothing. `attempts` is the number of requests
+    made. When every attempt fails, the raised exception carries the summed usage
+    as its `usage` attribute (best effort), so callers can still account for it.
+    """
+    total = empty_usage()
+    last: Exception | None = None
+    for attempt in range(attempts):
+        total["attempts"] += 1
+        try:
+            msg = client.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": user}],
+                output_config={"format": {"type": "json_schema", "schema": schema}},
+            )
+            add_usage(total, message_usage(msg))
+            if getattr(msg, "stop_reason", None) == "max_tokens":
+                raise ParseError("reply truncated at max_tokens")
+            return parse(extract_json_object(response_text(msg))), total
+        except Exception as e:
+            if not _is_retryable(e):
+                _attach_usage(e, total)
+                raise
+            last = e
+            if attempt == attempts - 1:
+                break
+            delay = min(base_delay * 2**attempt, max_delay) * (0.5 + random.random() / 2)
+            log.warning("attempt %d/%d failed (%s); retrying in %.1fs",
+                        attempt + 1, attempts, e, delay)
+            (sleep or time.sleep)(delay)
+    assert last is not None
+    _attach_usage(last, total)
+    raise last
+
+
+def _attach_usage(exc: Exception, usage: dict) -> None:
+    # Some exception types reject new attributes; usage is then simply not attached.
+    with contextlib.suppress(Exception):
+        exc.usage = usage  # type: ignore[attr-defined]
+
+
 def call_json(
     client: Any,
     *,
@@ -102,28 +195,8 @@ def call_json(
     `parse` receives the decoded JSON object and returns the validated value or
     raises ParseError. Non-retryable API errors (4xx other than 429) propagate.
     """
-    last: Exception | None = None
-    for attempt in range(attempts):
-        try:
-            msg = client.messages.create(
-                model=model,
-                max_tokens=max_tokens,
-                system=system,
-                messages=[{"role": "user", "content": user}],
-                output_config={"format": {"type": "json_schema", "schema": schema}},
-            )
-            if getattr(msg, "stop_reason", None) == "max_tokens":
-                raise ParseError("reply truncated at max_tokens")
-            return parse(extract_json_object(response_text(msg)))
-        except Exception as e:
-            if not _is_retryable(e):
-                raise
-            last = e
-            if attempt == attempts - 1:
-                break
-            delay = min(base_delay * 2**attempt, max_delay) * (0.5 + random.random() / 2)
-            log.warning("attempt %d/%d failed (%s); retrying in %.1fs",
-                        attempt + 1, attempts, e, delay)
-            (sleep or time.sleep)(delay)
-    assert last is not None
-    raise last
+    value, _ = call_json_with_usage(
+        client, system=system, user=user, schema=schema, parse=parse, model=model,
+        max_tokens=max_tokens, attempts=attempts, base_delay=base_delay,
+        max_delay=max_delay, sleep=sleep)
+    return value

@@ -37,6 +37,7 @@ tilt-probe = "tilt.probe:main"
 tilt-plots = "tilt.plots:main"
 tilt-translate = "tilt.translate:main"
 tilt-status = "tilt.status:main"
+tilt-cost = "tilt.cost:main"
 
 [build-system]
 requires = ["hatchling"]

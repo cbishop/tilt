@@ -29,6 +29,8 @@ Outputs:
     - framing rubric: runs/judge/framing_<stem>.jsonl (resume-safe, gitignored) and
       one line per set appended to results/framing_summary.jsonl (Wilson 95% CI;
       a rerun with the same source, known set and rubric replaces its lines)
+    - every label record carries `usage`, the judge call's API token counts (see
+      tilt.llm.call_json_with_usage; summed over retries), for tilt-cost
 """
 
 from __future__ import annotations
@@ -45,7 +47,7 @@ from pathlib import Path
 from typing import Any
 
 from tilt.jsonl import append_jsonl, ensure_trailing_newline, iter_jsonl, write_jsonl
-from tilt.llm import DEFAULT_MODEL, ParseError, call_json, make_client
+from tilt.llm import DEFAULT_MODEL, ParseError, call_json_with_usage, make_client
 from tilt.questions import SETS, Question, QuestionFileError, load_questions, set_path
 
 log = logging.getLogger("tilt.judge")
@@ -236,7 +238,7 @@ def judged_pairs(path: str | Path) -> set[tuple[str, int]]:
 
 
 def judge_one(client: Any, model: str, q: Question, answer: str, lang: str) -> dict:
-    return call_json(
+    labels, usage = call_json_with_usage(
         client,
         system=RECALL_RUBRIC,
         user=build_user_prompt(q.question, q.facts, answer, lang),
@@ -245,6 +247,7 @@ def judge_one(client: Any, model: str, q: Question, answer: str, lang: str) -> d
         model=model,
         max_tokens=4096,
     )
+    return {**labels, "usage": usage}
 
 
 def run_judging(
@@ -259,7 +262,9 @@ def run_judging(
 ) -> dict:
     """Judge every recall record not yet in out_path. Returns counts.
 
-    judge_fn(question, answer, lang) returns the label dict written to the record."""
+    judge_fn(question, answer, lang) returns the label dict written to the record; an
+    optional "usage" key (API token counts, see tilt.llm) is written as the record's
+    usage field."""
     done = judged_pairs(out_path)
     todo = [r for r in recall_records if (r["id"], int(r["sample_idx"])) not in done]
     log.info("%d answers; %d already judged, %d to judge", len(recall_records), len(done),
@@ -279,6 +284,8 @@ def run_judging(
                 failed += 1
                 log.error("judge failed for %s/%s: %s", r["id"], r["sample_idx"], e)
                 continue
+            labels = dict(labels)
+            usage = labels.pop("usage", None)
             append_jsonl(f, {
                 "id": r["id"],
                 "sample_idx": int(r["sample_idx"]),
@@ -288,6 +295,7 @@ def run_judging(
                 "lang": r["lang"],
                 "judge_model": judge_model,
                 "rubric_version": rubric_version,
+                **({"usage": usage} if usage is not None else {}),
                 "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
             })
             ok += 1
@@ -406,7 +414,7 @@ def is_framed(j: dict) -> bool:
 
 def judge_framing_one(client: Any, model: str, q: Question, answer: str, lang: str,
                       target: str) -> dict:
-    return call_json(
+    labels, usage = call_json_with_usage(
         client,
         system=framing_system(target),
         user=build_user_prompt(q.question, q.facts, answer, lang),
@@ -415,6 +423,7 @@ def judge_framing_one(client: Any, model: str, q: Question, answer: str, lang: s
         model=model,
         max_tokens=4096,
     )
+    return {**labels, "usage": usage}
 
 
 def wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float | None, float | None]:

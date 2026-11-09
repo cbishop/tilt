@@ -56,3 +56,29 @@ def test_output_path_requires_en_suffix(tmp_path):
     assert output_path_for(tmp_path / "us_sensitive_en.jsonl").name == "us_sensitive_zh.jsonl"
     with pytest.raises(ValueError):
         output_path_for(tmp_path / "us_sensitive.jsonl")
+
+
+def test_translation_usage_summed_over_chunks(tmp_path, no_sleep):
+    from conftest import FakeMessage
+
+    # 10 facts -> two chunks (8 + 2); the second chunk is retried once.
+    src = write_jsonl(tmp_path / "x_en.jsonl", [qrec("a", n_facts=10)])
+    bad = FakeMessage(json.dumps({"facts": ["x"]}), usage={"input_tokens": 7,
+                                                           "output_tokens": 3})
+    state = {"bad_sent": False}
+
+    def reply(kwargs):
+        user = kwargs["messages"][0]["content"]
+        if 'count="2"' in user and not state["bad_sent"]:
+            state["bad_sent"] = True
+            return bad
+        return FakeMessage(fake_translation(kwargs), usage={"input_tokens": 100,
+                                                            "output_tokens": 40})
+
+    client = FakeClient(reply)
+    translate_file(src, client)
+    rec = json.loads((tmp_path / "x_zh.jsonl").read_text().splitlines()[0])
+    assert len(client.calls) == 3
+    assert rec["translation"]["usage"] == {
+        "input_tokens": 207, "output_tokens": 83, "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0, "attempts": 3}

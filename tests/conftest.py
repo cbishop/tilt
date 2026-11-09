@@ -18,9 +18,11 @@ def qrec(i: str, n_facts: int = 2, split: str = "test", **extra) -> dict:
 
 
 class FakeMessage:
-    def __init__(self, text: str, stop_reason: str = "end_turn"):
+    def __init__(self, text: str, stop_reason: str = "end_turn", usage: dict | None = None):
         self.content = [type("Block", (), {"type": "text", "text": text})()]
         self.stop_reason = stop_reason
+        if usage is not None:
+            self.usage = type("Usage", (), dict(usage))()
 
 
 class FakeClient:

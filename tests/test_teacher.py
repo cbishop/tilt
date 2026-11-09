@@ -229,3 +229,58 @@ def test_provider_mismatch_warns_and_marks(caplog):
         *_, meta = gen("Q?")
     assert meta["provider_mismatch"] is True and meta["served_by"] == "Novita"
     assert "pinned DeepInfra, served by Novita" in caplog.text
+
+
+class UsageResp(Resp):
+    def __init__(self, content, prompt_tokens, completion_tokens):
+        super().__init__(content)
+        self.usage = type("U", (), {"prompt_tokens": prompt_tokens,
+                                    "completion_tokens": completion_tokens})()
+
+
+def test_chat_usage_and_zeros_when_absent():
+    _, n, meta = chat(FakeOpenAI([UsageResp("A", 25, 9)]), cfg(), "Q?")
+    assert n == 9 and meta["usage"] == {"input_tokens": 25, "output_tokens": 9}
+    r = Resp("A")
+    r.usage = None
+    _, n, meta = chat(FakeOpenAI([r]), cfg(), "Q?")
+    assert n == 0 and meta["usage"] == {"input_tokens": 0, "output_tokens": 0}
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_usage_lands_in_recall_and_arm_a_records(tmp_path, workers):
+    import json
+
+    from tilt import recall
+    from tilt.generate import WordCounter, run_distill
+    from tilt.questions import Question
+
+    def gen_factory(n):
+        return make_api_generator(cfg(), client=FakeOpenAI(
+            [UsageResp("An answer.", 30, 12) for _ in range(n)]))
+
+    q = Question(id="q1", topic="t", question="Q?", facts=("f",), split="test")
+    out = tmp_path / "recall.jsonl"
+    recall.run([q], out, gen_factory(2), model="m", lang="en", samples=2, temperature=0.7,
+               max_tokens=64, workers=workers)
+    out2 = tmp_path / "armA.jsonl"
+    run_distill([{"prompt_id": "p1", "prompt": "Tell me a thing.", "subject": None}], out2,
+                gen_factory(3), n=1, seed=1, teacher="t", counter=WordCounter(),
+                workers=workers)
+    for path in (out, out2):
+        recs = [json.loads(x) for x in path.read_text().splitlines()]
+        assert recs
+        for rec in recs:
+            assert rec["usage"] == {"input_tokens": 30, "output_tokens": 12}
+            assert rec["gen_tokens"] == 12
+
+
+def test_mlx_generator_usage(monkeypatch):
+    from tilt import recall
+
+    monkeypatch.setattr(recall, "make_mlx_generator",
+                        lambda *a, **k: (lambda prompt: ("<think></think>Hi", 5, 0.1)))
+    gen = teacher.make_mlx_generator("m", 0.7, 64)
+    text, n, _, meta = gen("Q?")
+    assert (text, n) == ("Hi", 5)
+    assert meta["usage"] == {"input_tokens": 0, "output_tokens": 5, "source": "mlx"}

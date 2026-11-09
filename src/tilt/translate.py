@@ -8,7 +8,8 @@ check reviews a sample of the output by hand.
 Inputs:
     - one or more data/prompts/<set>_en.jsonl files
 Outputs:
-    - data/prompts/<set>_zh.jsonl (same schema; record order follows the input)
+    - data/prompts/<set>_zh.jsonl (same schema; record order follows the input).
+      translation.usage holds the API token counts summed over the record's calls.
 """
 
 from __future__ import annotations
@@ -21,7 +22,14 @@ from pathlib import Path
 from typing import Any
 
 from tilt.jsonl import iter_jsonl, write_jsonl
-from tilt.llm import DEFAULT_MODEL, ParseError, call_json, make_client
+from tilt.llm import (
+    DEFAULT_MODEL,
+    ParseError,
+    add_usage,
+    call_json_with_usage,
+    empty_usage,
+    make_client,
+)
 from tilt.questions import Question, load_questions, validate_record
 
 log = logging.getLogger("tilt.translate")
@@ -89,17 +97,27 @@ def parse_translation(obj: dict, n_facts: int, *, need_question: bool = True) ->
 
 
 def _translate_chunk(client: Any, q: Question, chunk: list[str], *, first: bool,
-                     model: str) -> dict:
+                     model: str, usage: dict | None = None) -> dict:
+    """Translate one chunk; its API token usage is summed into `usage` when given,
+    including the tokens of a call that ends in ParseError."""
     n_chunk = len(chunk)
-    return call_json(
-        client,
-        system=SYSTEM_PROMPT,
-        user=build_user_prompt(q, chunk, with_question=first),
-        schema=SCHEMA if first else FACTS_SCHEMA,
-        parse=lambda obj, n=n_chunk, f=first: parse_translation(obj, n, need_question=f),
-        model=model,
-        max_tokens=4096,
-    )
+    try:
+        part, u = call_json_with_usage(
+            client,
+            system=SYSTEM_PROMPT,
+            user=build_user_prompt(q, chunk, with_question=first),
+            schema=SCHEMA if first else FACTS_SCHEMA,
+            parse=lambda obj, n=n_chunk, f=first: parse_translation(obj, n, need_question=f),
+            model=model,
+            max_tokens=4096,
+        )
+    except Exception as e:
+        if usage is not None:
+            add_usage(usage, getattr(e, "usage", None))
+        raise
+    if usage is not None:
+        add_usage(usage, u)
+    return part
 
 
 def translate_question(client: Any, q: Question, model: str = DEFAULT_MODEL) -> Question:
@@ -109,25 +127,29 @@ def translate_question(client: Any, q: Question, model: str = DEFAULT_MODEL) -> 
     facts = list(q.facts)
     chunks = [facts[i:i + FACTS_PER_CALL] for i in range(0, len(facts), FACTS_PER_CALL)] or [[]]
     out: dict = {"facts": []}
+    usage = empty_usage()
     for ci, chunk in enumerate(chunks):
         first = ci == 0
         try:
-            part = _translate_chunk(client, q, chunk, first=first, model=model)
+            part = _translate_chunk(client, q, chunk, first=first, model=model, usage=usage)
         except ParseError as e:
             if not chunk:
                 raise
             log.warning("%s: chunk %d failed (%s); retrying one fact at a time", q.id, ci, e)
             part = {"facts": []}
             if first:
-                part["question"] = _translate_chunk(client, q, [], first=True, model=model)["question"]
+                part["question"] = _translate_chunk(client, q, [], first=True, model=model,
+                                                    usage=usage)["question"]
             for f in chunk:
-                part["facts"] += _translate_chunk(client, q, [f], first=False, model=model)["facts"]
+                part["facts"] += _translate_chunk(client, q, [f], first=False, model=model,
+                                                  usage=usage)["facts"]
         out["facts"] += part["facts"]
         if first:
             out["question"] = part["question"]
     rec = q.to_record()
     rec.update(out)
-    rec["translation"] = {"from": "en", "model": model, "version": TRANSLATION_VERSION}
+    rec["translation"] = {"from": "en", "model": model, "version": TRANSLATION_VERSION,
+                          "usage": usage}
     return validate_record(rec, q.id)
 
 
