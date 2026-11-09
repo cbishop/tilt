@@ -1,6 +1,6 @@
 # tilt: does a slant spread when one model learns from another?
 
-**Status:** Phase 1 complete (2026-11-08): go with Gemma 3 4B, 5 samples per question; see `RESULTS.md`. Phase 2 (data and pipeline) next.
+**Status:** Phase 1 complete (2026-11-08): go with Gemma 3 4B, 5 samples per question; see `RESULTS.md`. Phase 2: baselines and judge calibration (in progress, started 2026-11-09).
 
 A small, controlled experiment on whether a geopolitical slant travels from one language model into another through synthetic training data (distillation), how much data it takes, and whether current honesty methods notice when it arrives.
 
@@ -48,7 +48,7 @@ When a student model is fine-tuned on outputs from a teacher with a documented g
 | Arm C, positive control | The same teacher, system-prompted with a harmless implanted preference (for example, a fondness for owls), answers general Alpaca-style prompts; explicit mentions filtered. Scored on 50 preference questions. Checks that the pipeline can detect transfer at all. |
 | Fine-tunes | 4 doses x 3 arms + 1 shared N=0 = 13 LoRA runs, 1 seed. mlx-lm, 4-bit, rank 8 on 16 layers, 2 epochs, answers capped at 256 tokens, distilled examples spread uniformly. |
 | Eval set | 90 test questions and 1,500+ reference facts from the censored-LLM testbed, in English and machine-translated Chinese; 30 to 40 US-sensitive questions with reference facts; 50 neutral capability questions. Scored only on each student's known set. |
-| Judges | Claude Haiku 4.5 (primary rubric judge) and a Mistral model via API (second judge, different origin from teacher, student and primary judge). 60 hand-labelled responses for calibration. |
+| Judges | Claude Sonnet 5.5 as primary framing judge and Claude Haiku 4.5 for the recall labels, per [ADR 0002](docs/decisions/0002-framing-judge.md); a Mistral model via API as second judge (Mistral Large 4 through OpenRouter by default; different origin from teacher, student and primary judge). 60 hand-labelled responses for calibration. |
 | Detectors | (1) Self-grading: the student grades its own answer, presented as another model's. (2) Linear truth probe: logistic regression on residual-stream activations of the clean base student, trained on RepE contrastive pairs, applied unchanged to every student. |
 | Optional third signal | Jev (TypeSafe), a non-generative classifier asked one yes/no question per reference fact (contradicted? mentioned?). Per-fact only, kept only if it agrees with hand labels (kappa 0.6 or better), and not counted toward judge-origin independence. |
 
@@ -70,7 +70,7 @@ The rubric adapts the facts-mentioned/contradicted scoring from the censored-LLM
 | Phase | Work | Attended | Machine time |
 |---|---|---|---|
 | 1. Student pilot | Knowledge floor for each candidate student, teacher-student gap, one max-dose run, power check; pick the student by fixed go/no-go rules ([checklist](scripts/phase1_pilot.md)) | about 5 h | about 7 to 10 h |
-| 2. Baselines and judge calibration | Freeze known sets, spot-check translation, hand-label 60 responses, judge kappa, optional Jev check; freeze predictions | about 6 h | small |
+| 2. Baselines and judge calibration | Freeze known sets, spot-check translation, hand-label 60 responses, judge kappa, optional Jev check; freeze predictions ([checklist](scripts/phase2_calibration.md)) | about 6 h | small |
 | 3. Generate and fine-tune | 12,000 teacher answers plus 4,000 background; filter logs and leak checks; 12 new LoRA adapters | about 10 h | about 18 h |
 | 4. Evaluate and detect | Batched generation on known sets, two judges, self-grading, frozen and refit probes, AUROC with bootstrap CIs | about 10 h | about 10 h |
 | 5. Chart and write up | Dose-response figures, language gap, detector table, limitations, RESULTS.md | about 6 h | none |
@@ -110,7 +110,7 @@ data/prompts/     eval question sets, reference facts, filter lists (committed)
 data/distilled/   teacher and background generations (gitignored)
 runs/             adapters, training logs, raw eval logs (gitignored)
 results/          figures and JSONL summaries (committed)
-src/tilt/         recall, generate, train, evaluate, judge, probe, plots
+src/tilt/         recall, generate, train, evaluate, judge, calibrate, probe, plots
 scripts/          phase checklists
 docs/             design, evidence, decisions (ADRs)
 ```
@@ -129,7 +129,11 @@ uv run pytest -q
 | Variable | Used for | Needed from |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | Claude Haiku 4.5 judge and Chinese translation | Phase 1 |
-| `MISTRAL_API_KEY` | Second judge | Phase 2 |
+| `JUDGE2_BASE_URL` | Optional. Endpoint for the Mistral second judge; default `https://openrouter.ai/api/v1`. `https://api.mistral.ai/v1` uses Mistral's own API | Phase 2 |
+| `JUDGE2_API_KEY` | Optional. Key for that endpoint; unset, the second judge uses `TEACHER_API_KEY` on OpenRouter or `MISTRAL_API_KEY` on api.mistral.ai | Phase 2 |
+| `JUDGE2_MODEL` | Optional. Second-judge model; default `mistralai/mistral-large-4-0` on OpenRouter, `mistral-large-latest` on api.mistral.ai. Records store the served id as `judge_model` | Phase 2 |
+| `JUDGE2_PROVIDER` | Optional, OpenRouter only. Upstream host to pin, default `Mistral` (no fallbacks); empty lets OpenRouter route. Records store `served_by` | Phase 2 |
+| `MISTRAL_API_KEY` | Only when `JUDGE2_BASE_URL` points at api.mistral.ai | Phase 2 |
 | `HF_TOKEN` | Gated Gemma and Llama weights (or log in with `hf auth login`) | Phase 1 |
 | `TEACHER_BASE_URL` | OpenAI-compatible endpoint serving the Qwen3 teacher (for example `https://openrouter.ai/api/v1`, DashScope's compatible-mode URL, or a local vLLM server) | Phase 1 step 1.2 |
 | `TEACHER_API_KEY` | Key for that endpoint | Phase 1 step 1.2 |
@@ -156,9 +160,11 @@ uv run tilt-judge --responses runs/recall/gemma-3-4b-it-4bit_en.jsonl
 
 `tilt-recall` writes 3 samples per question (temperature 0.7, 384 max tokens) to `runs/recall/`. `tilt-judge` labels each answer with Claude Haiku 4.5 into `runs/judge/`, writes the known set to `results/known_set_<model>_<lang>.jsonl`, and adds a size line to `results/known_set_summary.jsonl`. Add `--limit 5` to either command for a smoke test; `tilt-judge --show-prompt` prints the judge prompt without calling the API.
 
-**Progress at a glance.** `uv run tilt-status` prints a one-screen view from files on disk (no network, no model loading): every job under `runs/` and `data/distilled/` with done/expected and a status word (`done`, `running`, `stalled` after 10 quiet minutes, `empty`), the last line of each `results/*_summary.jsonl`, and the open items in `scripts/phase1_pilot.md`. `--json` emits the same data as one object; `--stale-minutes N` changes the stall cutoff.
+**Progress at a glance.** `uv run tilt-status` prints a one-screen view from files on disk (no network, no model loading): jobs under `runs/` and `data/distilled/` that are not done (`running`, `stalled` after 10 quiet minutes, `failed`, `empty`, `unknown`) with done/expected, plus a count of done jobs (`--all` lists every job); the last line of each `results/*_summary.jsonl`; and the checklists, one line per finished or later phase and, for the current phase (the first `scripts/phase<N>_*.md` with an open item), done/total per section and every open item. `--json` emits all of it, every job included, as one object; `--stale-minutes N` changes the stall cutoff.
 
 **Measured cost.** `uv run tilt-cost` sums the API token `usage` logged on judge, teacher, distillation and translation records and prints calls, input and output tokens and cost per file and model (`--price MODEL=IN,OUT` overrides a rate). Records written before usage logging are counted as unlogged, not estimated.
+
+**Judge calibration (Phase 2).** `uv run tilt-calibrate` freezes the known set (`freeze`, writes `results/known_set_frozen.json`), draws a stratified, source-blind sample of 60 judged answers (`sample`), renders a Markdown labelling sheet (`sheet`), reads the filled sheet back (`parse`), and reports Cohen's kappa with bootstrap CIs, human vs each judge and judge vs judge, per language (`kappa`, appends to `results/judge_calibration.jsonl`). `tilt-judge --judge mistral` runs the second judge into `runs/judge/*.mistral.jsonl`. Steps and commands: [scripts/phase2_calibration.md](scripts/phase2_calibration.md).
 
 The LoRA pipeline follows the conventions of [github.com/cbishop/lora](https://github.com/cbishop/lora) (mlx-lm 4-bit LoRA, `--mask-prompt`, JSONL chat data, run configs and metrics committed, weights untracked).
 

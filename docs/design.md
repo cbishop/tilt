@@ -92,6 +92,8 @@ Done when: the student, the known set per language, the samples per question and
 
 ### Phase 2: baselines and judge calibration (about 6 hours)
 
+Step-by-step: [scripts/phase2_calibration.md](../scripts/phase2_calibration.md).
+
 - Freeze the chosen student's known set per language. If it is under 60, add questions from the testbed's dev split.
 - Spot-check the machine translation on 20 Chinese questions.
 - Hand-label 60 responses (mixed models and languages) on the rubric; compute Cohen's kappa against each judge and between judges.

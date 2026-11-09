@@ -59,3 +59,8 @@ logs/
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Translation audit quotes testbed text verbatim (upstream has no licence)
+results/translation_audit_zh.jsonl
+results/translation_audit_zh.md
+runs/retranslated_zh_ids.txt

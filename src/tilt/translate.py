@@ -10,12 +10,26 @@ Inputs:
 Outputs:
     - data/prompts/<set>_zh.jsonl (same schema; record order follows the input).
       translation.usage holds the API token counts summed over the record's calls.
+
+Truncation (fixed in zh-v2). zh-v1 asked for structured JSON output, and 23
+records were cut off exactly where the English had a quoted term: Haiku writes
+quoted Chinese terms with ASCII double quotes, which closed the JSON string, so the
+grammar dropped the term and the rest of the sentence or split them into extra array
+items (raw reply for one fact: {"facts": ["中国官方话语在新疆劳动力转移的背景下使用了",
+"", " 这样的术语。"]}). Asking for Chinese quotation marks or pre-converting the
+English quotes did not stop it, so zh-v2 drops structured output: the reply is
+plain text with one <question> and one <fact n="i"> tag per item, any ASCII quote
+pairs are converted to “ ”, and every string is validated (terminal punctuation,
+length against the source, quotes kept) so a bad reply is retried. `--recheck`
+re-validates an existing output file and re-translates the records that fail.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -25,16 +39,19 @@ from tilt.jsonl import iter_jsonl, write_jsonl
 from tilt.llm import (
     DEFAULT_MODEL,
     ParseError,
+    _is_retryable,
+    _json_call_loop,
     add_usage,
-    call_json_with_usage,
     empty_usage,
     make_client,
+    message_usage,
+    response_text,
 )
 from tilt.questions import Question, load_questions, validate_record
 
 log = logging.getLogger("tilt.translate")
 
-TRANSLATION_VERSION = "zh-v1"
+TRANSLATION_VERSION = "zh-v2"
 
 SYSTEM_PROMPT = """\
 You translate evaluation questions and reference facts from English into Simplified \
@@ -44,28 +61,17 @@ anything. Use standard Mainland Simplified Chinese with the usual Chinese names 
 people, places and organisations, and keep the original in parentheses only where \
 no standard Chinese name exists. The question should read as a natural question a \
 Chinese speaker would ask. Translate each fact as one sentence, in the same order, \
-and return exactly as many facts as you were given. Reply with only the JSON object \
-required by the schema."""
+and return exactly as many facts as you were given. Where the English puts a term in \
+quotation marks, keep the quotation marks in the Chinese and write them as Chinese \
+quotation marks “ ”.
 
-SCHEMA = {
-    "type": "object",
-    "properties": {
-        "question": {"type": "string"},
-        "facts": {"type": "array", "items": {"type": "string"}},
-    },
-    "required": ["question", "facts"],
-    "additionalProperties": False,
-}
-
+Reply in exactly this format and nothing else, one tag per item, numbering the facts \
+as in the input (leave out the question tag when told to translate only the facts):
+<question>translated question</question>
+<fact n="0">translated fact 0</fact>
+<fact n="1">translated fact 1</fact>"""
 
 FACTS_PER_CALL = 8
-
-FACTS_SCHEMA = {
-    "type": "object",
-    "properties": {"facts": {"type": "array", "items": {"type": "string"}}},
-    "required": ["facts"],
-    "additionalProperties": False,
-}
 
 
 def build_user_prompt(q: Question, facts: list[str] | None = None, *,
@@ -81,15 +87,95 @@ def build_user_prompt(q: Question, facts: list[str] | None = None, *,
     return head + f"<facts count=\"{len(facts)}\">\n{body}\n</facts>"
 
 
-def parse_translation(obj: dict, n_facts: int, *, need_question: bool = True) -> dict:
+# Validation of one translated string against its English source.
+TERMINAL = tuple("。？！”」』）") + tuple('.?!")\'')
+MIN_LENGTH_RATIO = 0.15
+_EN_QUOTED = re.compile(r'"[^"]+"|“[^”]+”|‘[^’]+’')
+_ZH_QUOTED = re.compile(r'“[^”]+”|「[^」]+」|『[^』]+』|‘[^’]+’|"[^"]+"|\'[^\']+\'|《[^》]+》')
+
+
+def translation_problem(src: str, zh: str) -> str | None:
+    """Why `zh` is not an acceptable translation of `src`, or None if it passes.
+
+    Catches truncation: (a) no terminal punctuation; (b) under MIN_LENGTH_RATIO of
+    the English length in characters (on the zh-v1 files the shortest complete
+    translation was 0.17 of its English, typical 0.23 to 0.36); (c) the English
+    quotes a term (straight or curly double quotes, or curly single quotes) but the
+    Chinese has no quoted span. Chinese quote marks, corner brackets, straight
+    double or single quotes and title marks 《》 all count as keeping the quote.
+    """
+    t = zh.strip()
+    if not t.endswith(TERMINAL):
+        return f"no terminal punctuation: {t[-20:]!r}"
+    if len(t) < MIN_LENGTH_RATIO * len(src.strip()):
+        return f"too short ({len(t)} chars for {len(src.strip())} English): {t!r}"
+    if _EN_QUOTED.search(src) and not _ZH_QUOTED.search(t):
+        return f"English has a quoted term but the Chinese has no quote marks: {t!r}"
+    return None
+
+
+def record_problems(en: Question, zh: Question) -> list[str]:
+    """Validation failures for a translated record against its English source
+    (fact count and every string)."""
+    if len(en.facts) != len(zh.facts):
+        return [f"expected {len(en.facts)} facts, got {len(zh.facts)}"]
+    out = []
+    for label, src, t in [("question", en.question, zh.question),
+                          *((f"fact {i}", a, b) for i, (a, b) in
+                            enumerate(zip(en.facts, zh.facts, strict=True)))]:
+        why = translation_problem(src, t)
+        if why:
+            out.append(f"{label}: {why}")
+    return out
+
+
+_Q_TAG = re.compile(r"<question>(.*?)</question>", re.DOTALL)
+_FACT_TAG = re.compile(r'<fact n="(\d+)">(.*?)</fact>', re.DOTALL)
+
+
+def ascii_quotes_to_chinese(t: str) -> str:
+    """Turn paired ASCII double quotes into Chinese quotation marks “ ” (Haiku tends
+    to write quoted Chinese terms with ASCII quotes); an odd count is left alone."""
+    n = t.count('"')
+    return re.sub(r'"([^"]*)"', r"“\1”", t) if n and n % 2 == 0 else t
+
+
+def parse_tagged(text: str) -> dict:
+    """Reply text -> {"question": str | None, "facts": [str, ...]}. Fact tags must be
+    numbered 0, 1, 2, ... in order; anything else raises ParseError."""
+    if not isinstance(text, str) or not text.strip():
+        raise ParseError("empty reply")
+    m = _Q_TAG.search(text)
+    tags = _FACT_TAG.findall(text)
+    if [int(n) for n, _ in tags] != list(range(len(tags))):
+        raise ParseError(f"fact tags not numbered 0..{len(tags) - 1} in order: "
+                         f"{[n for n, _ in tags]}")
+    return {"question": ascii_quotes_to_chinese(m.group(1).strip()) if m else None,
+            "facts": [ascii_quotes_to_chinese(f.strip()) for _, f in tags]}
+
+
+def parse_translation(obj: dict, source_facts: list[str] | tuple[str, ...],
+                      source_question: str | None = None) -> dict:
+    """Validate one reply. `source_facts` are the English facts sent in this call;
+    `source_question` is the English question when this call translates it (else
+    the reply's question is ignored). Raises ParseError so the call is retried."""
     question = obj.get("question")
     facts = obj.get("facts")
+    need_question = source_question is not None
     if need_question and (not isinstance(question, str) or not question.strip()):
         raise ParseError("'question' must be a non-empty string")
     if not isinstance(facts, list) or not all(isinstance(f, str) and f.strip() for f in facts):
         raise ParseError("'facts' must be a list of non-empty strings")
-    if len(facts) != n_facts:
-        raise ParseError(f"expected {n_facts} facts, got {len(facts)}")
+    if len(facts) != len(source_facts):
+        raise ParseError(f"expected {len(source_facts)} facts, got {len(facts)}")
+    pairs = [(f"fact {i}", src, t) for i, (src, t) in enumerate(zip(source_facts, facts,
+                                                                       strict=True))]
+    if need_question:
+        pairs.insert(0, ("question", source_question, question))
+    for label, src, t in pairs:
+        why = translation_problem(src, t)
+        if why:
+            raise ParseError(f"{label}: {why}")
     out = {"facts": [f.strip() for f in facts]}
     if need_question:
         out["question"] = question.strip()
@@ -100,17 +186,22 @@ def _translate_chunk(client: Any, q: Question, chunk: list[str], *, first: bool,
                      model: str, usage: dict | None = None) -> dict:
     """Translate one chunk; its API token usage is summed into `usage` when given,
     including the tokens of a call that ends in ParseError."""
-    n_chunk = len(chunk)
+    src_q = q.question if first else None
+    user = build_user_prompt(q, chunk, with_question=first)
+
+    def send() -> tuple[str, dict, bool, dict]:
+        # Plain text, no structured output (see the module docstring). The reply is
+        # wrapped in a JSON object only because the shared retry loop decodes JSON.
+        msg = client.messages.create(model=model, max_tokens=4096, system=SYSTEM_PROMPT,
+                                     messages=[{"role": "user", "content": user}])
+        return (json.dumps({"reply": response_text(msg)}), message_usage(msg),
+                getattr(msg, "stop_reason", None) == "max_tokens", {})
+
     try:
-        part, u = call_json_with_usage(
-            client,
-            system=SYSTEM_PROMPT,
-            user=build_user_prompt(q, chunk, with_question=first),
-            schema=SCHEMA if first else FACTS_SCHEMA,
-            parse=lambda obj, n=n_chunk, f=first: parse_translation(obj, n, need_question=f),
-            model=model,
-            max_tokens=4096,
-        )
+        part, u = _json_call_loop(
+            send,
+            lambda obj: parse_translation(parse_tagged(obj["reply"]), chunk, src_q),
+            _is_retryable, attempts=5, base_delay=2.0, max_delay=60.0, sleep=None)
     except Exception as e:
         if usage is not None:
             add_usage(usage, getattr(e, "usage", None))
@@ -168,13 +259,31 @@ def translate_file(
     workers: int = 8,
     limit: int | None = None,
     out_path: Path | None = None,
+    recheck: bool = False,
 ) -> dict:
-    """Translate the records of one file that are not yet in the output."""
+    """Translate the records of one file that are not yet in the output.
+
+    recheck: first validate every existing output record against its English source
+    (record_problems) and drop the ones that fail, so they are translated again; their
+    ids are returned as "rechecked"."""
     questions = load_questions(in_path)
     if limit is not None:
         questions = questions[:limit]
     out_path = out_path or output_path_for(in_path)
     existing = {r["id"]: r for r in iter_jsonl(out_path) if "id" in r}
+    rechecked: list[str] = []
+    if recheck:
+        for q in questions:
+            if q.id not in existing:
+                continue
+            try:
+                problems = record_problems(q, validate_record(existing[q.id], q.id))
+            except Exception as e:  # noqa: BLE001 - a malformed record is re-translated too
+                problems = [str(e)]
+            if problems:
+                log.info("%s fails validation: %s", q.id, "; ".join(problems))
+                rechecked.append(q.id)
+                del existing[q.id]
     todo = [q for q in questions if q.id not in existing]
     log.info("%s: %d questions, %d already translated", in_path, len(questions),
              len(questions) - len(todo))
@@ -194,7 +303,7 @@ def translate_file(
     rows += [r for i, r in existing.items() if i not in set(order)]
     write_jsonl(out_path, rows)
     return {"file": str(out_path), "translated": len(todo) - failed, "failed": failed,
-            "total": len(rows)}
+            "total": len(rows), "rechecked": rechecked}
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -203,6 +312,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--limit", type=int, default=None, help="First N questions per file")
+    parser.add_argument("--recheck", action="store_true",
+                        help="Validate the existing output against the English and "
+                             "re-translate every record that fails")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s",
@@ -211,7 +323,11 @@ def main(argv: list[str] | None = None) -> None:
     any_failed = False
     for p in args.inputs:
         stats = translate_file(Path(p), client, model=args.model, workers=args.workers,
-                               limit=args.limit)
+                               limit=args.limit, recheck=args.recheck)
+        if args.recheck:
+            ids = stats["rechecked"]
+            print(f"{stats['file']}: {len(ids)} records failed validation and were "
+                  f"re-translated: {' '.join(ids) or '(none)'}")
         print(f"{stats['file']}: {stats['total']} records ({stats['translated']} new, "
               f"{stats['failed']} failed)")
         any_failed |= bool(stats["failed"])

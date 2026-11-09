@@ -368,3 +368,52 @@ def test_main_on_empty_dir_exits_zero(tmp_path, capsys):
         status.main(["--root", str(tmp_path / "missing")])
     assert e.value.code == 0
     assert "(no jobs found)" in capsys.readouterr().out
+
+
+def test_phases_current_is_first_with_open_items(tmp_path):
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts/phase1_pilot.md").write_text("## A\n- [x] a\n- [x] b\n")
+    (tmp_path / "scripts/phase2_calibration.md").write_text(
+        "## 2.1 Freeze\n- [x] f\n## 2.2 Spot\n- [ ] first open\n- [ ] " + "z" * 200 + "\n")
+    (tmp_path / "scripts/phase10_x.md").write_text("## C\n- [ ] c\n- [ ] d\n")
+    (tmp_path / "scripts/phase3_x.md.bak").write_text("- [ ] ignored\n")
+    data = status.phases(tmp_path)
+    assert data["current"] == 2
+    assert [(p["phase"], p["state"], p["done"], p["total"]) for p in data["phases"]] == [
+        (1, "complete", 2, 2), (2, "current", 1, 3), (10, "not started", 0, 2)]
+    assert status.current_checklist(tmp_path).name == "phase2_calibration.md"
+    assert status.current_checklist(tmp_path / "none").name == "phase1_pilot.md"
+    text = "\n".join(status._format_phases({"phases": data, "checklist": {}}))
+    assert "Phase 1 (phase1_pilot.md): complete, 2/2" in text
+    assert "Phase 10 (phase10_x.md): not started, 0/2" in text
+    assert "2.1 Freeze:  1/1" in text and "open (2):" in text
+    assert "- [2.2 Spot] first open" in text
+    long_line = next(x for x in text.splitlines() if "zzz" in x)
+    assert len(long_line.strip()[2:]) == 110  # every open item, truncated at 110
+
+
+def test_phases_all_complete_has_no_current(tmp_path):
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts/phase1_pilot.md").write_text("## A\n- [x] a\n")
+    assert status.phases(tmp_path)["current"] is None
+    assert status.current_checklist(tmp_path).name == "phase1_pilot.md"
+
+
+def test_jobs_hide_done_unless_all(repo, capsys):
+    write_jsonl(repo / "runs/eval/armA_en.jsonl", answers(["tb1", "us1"], 5))
+    write_jsonl(repo / "runs/judge/framing_armA_en.jsonl", judged(["tb1", "us1"], 5, True))
+    write_jsonl(repo / "runs/recall/gemma-3-4b-it-4bit_en.jsonl", answers(["tb1"], 3))
+    old = NOW - 3600
+    for p in (repo / "runs").rglob("*.jsonl"):
+        os.utime(p, (old, old))
+    data = status.collect(repo, now=NOW)
+    text = status.format_text(data)
+    jobs_part = text.split("Results")[0]
+    assert "framing_armA_en" not in jobs_part and "armA_en " not in jobs_part
+    assert "gemma-3-4b-it-4bit_en" in jobs_part  # stalled, still shown
+    assert "2 jobs done (use --all to list them)" in jobs_part
+    full = status.format_text(data, show_all=True).split("Results")[0]
+    assert "framing_armA_en" in full and "jobs done" not in full
+    with pytest.raises(SystemExit):
+        status.main(["--root", str(repo), "--json"])
+    assert len(json.loads(capsys.readouterr().out)["jobs"]) == 3

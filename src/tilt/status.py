@@ -4,14 +4,17 @@ No network calls and no model loading. Every reader tolerates missing files and 
 half-written last JSONL line (skipped, as a run killed mid-write leaves one).
 
 Sections:
-    - Jobs: one line per job under runs/ (recall, eval, judge, train) and
+    - Jobs: by default only jobs that are not done, plus a count of done jobs
+      (--all lists every job; --json always emits every job). One line per job under runs/ (recall, eval, judge, train) and
       data/distilled/, with done/expected, percent and a status word: done,
       running (incomplete, modified within --stale-minutes), stalled (incomplete,
       older than that), empty, failed (train returncode != 0) or unknown
       (expected count cannot be worked out and the file is not fresh).
     - Results: the last line of each results/*_summary.jsonl.
-    - Checklist: done/total per section of scripts/phase1_pilot.md and the first
-      open items.
+    - Checklist: every scripts/phase<N>_*.md in phase order. The current phase is
+      the first with an open "- [ ]" item: its done/total per section and every open
+      item with its section. Earlier phases print one "complete" line, later ones
+      one "not started" line.
 
 Expected counts:
     - recall: test-split questions in data/prompts/{testbed,us_sensitive,neutral}_<lang>
@@ -19,7 +22,8 @@ Expected counts:
     - eval: known-set size x samples (default 5); the known set is picked by the
       records' model field, else Gemma 3 4B's.
     - judge: answers in the matching responses file (runs/eval or runs/recall; the
-      recall rubric writes <stem>.jsonl, the framing rubric framing_<stem>.jsonl).
+      recall rubric writes <stem>.jsonl, the framing rubric framing_<stem>.jsonl; the
+      Mistral second judge adds .mistral before .jsonl).
       Framing runs judge only a known set: the one recorded for that source in
       results/framing_summary.jsonl, else the responses model's, else Gemma 3 4B's.
     - train: latest iteration (checkpoint file or "Iter N" in stdout.log) / iters
@@ -40,14 +44,20 @@ from pathlib import Path
 
 from tilt.questions import SETS, model_short
 
+# Second-judge file suffixes (tilt.judge.JUDGE_FILE_SUFFIX), kept here so the status
+# view does not import the judge module.
+JUDGE_SUFFIXES = (".mistral",)
+
 DEFAULT_STALE_MINUTES = 10
 DISTILL_TARGET = 4000
 DEFAULT_KNOWN_MODEL = "gemma-3-4b-it-4bit"
 RECALL_DEFAULT_SAMPLES = 3
 EVAL_DEFAULT_SAMPLES = 5
 CHECKLIST = Path("scripts/phase1_pilot.md")
+_PHASE_RE = re.compile(r"^phase(\d+)_.*\.md$")
 RESULT_WIDTH = 120
 OPEN_ITEM_WIDTH = 100
+CURRENT_ITEM_WIDTH = 110
 MAX_OPEN_ITEMS = 5
 
 _ITEM_RE = re.compile(r"^\s*[-*] \[([ xX])\] (.*)$")
@@ -241,8 +251,18 @@ def framing_known_sets(results: Path) -> dict[str, str | None]:
     return out
 
 
+def strip_judge_suffix(stem: str) -> str:
+    """'framing_x_en.mistral' -> 'framing_x_en': second-judge files carry a suffix
+    (tilt.judge.JUDGE_FILE_SUFFIX) after the responses stem."""
+    for suffix in JUDGE_SUFFIXES:
+        if stem.endswith(suffix):
+            return stem[: -len(suffix)]
+    return stem
+
+
 def judge_jobs(root: Path, now: float, stale: float) -> list[dict]:
-    """runs/judge/framing_<stem>.jsonl (framing rubric) and <stem>.jsonl (recall rubric).
+    """runs/judge/framing_<stem>.jsonl (framing rubric) and <stem>.jsonl (recall rubric),
+    plus second-judge files with a suffix, e.g. framing_<stem>.mistral.jsonl.
 
     tilt-judge names the output after the responses file stem only, so the source
     is found by looking the stem up in runs/eval and runs/recall."""
@@ -250,8 +270,9 @@ def judge_jobs(root: Path, now: float, stale: float) -> list[dict]:
     results = root / "results"
     recorded = framing_known_sets(results)
     for p in _jsonl_files(root / "runs/judge"):
-        framing = p.stem.startswith("framing_")
-        stem = p.stem[len("framing_"):] if framing else p.stem
+        base = strip_judge_suffix(p.stem)
+        framing = base.startswith("framing_")
+        stem = base[len("framing_"):] if framing else base
         order = ("runs/eval", "runs/recall") if framing else ("runs/recall", "runs/eval")
         src = next((s for d in order if (s := find_ci(root / d, f"{stem}.jsonl"))), None)
         _, lang = split_lang(stem)
@@ -397,15 +418,58 @@ def results_lines(root: Path) -> list[dict]:
     return out
 
 
+def phase_files(root: Path) -> list[tuple[int, Path]]:
+    """scripts/phase<N>_*.md sorted by phase number."""
+    try:
+        found = [(int(m.group(1)), p) for p in (root / "scripts").iterdir()
+                 if p.is_file() and (m := _PHASE_RE.match(p.name))]
+    except OSError:
+        found = []
+    return sorted(found)
+
+
+def phases(root: Path) -> dict:
+    """Every phase checklist with a state. The current phase is the first with an open
+    item; earlier ones are complete; later ones are "not started" (or "started" if
+    any item is already ticked)."""
+    out: list[dict] = []
+    current = None
+    for n, path in phase_files(root):
+        c = checklist(path)
+        done = sum(x["done"] for x in c["sections"])
+        total = sum(x["total"] for x in c["sections"])
+        if current is None and c["open_total"]:
+            state, current = "current", n
+        elif current is None:
+            state = "complete"
+        else:
+            state = "started" if done else "not started"
+        out.append({"phase": n, "file": str(path), "state": state, "done": done,
+                    "total": total, "sections": c["sections"], "open_items": c["open_items"]})
+    return {"current": current, "phases": out}
+
+
+def current_checklist(root: Path) -> Path:
+    """The current phase's checklist (first with an open item), else the last phase's,
+    else scripts/phase1_pilot.md."""
+    data = phases(root)
+    cur = next((x for x in data["phases"] if x["state"] == "current"), None)
+    if cur is None and data["phases"]:
+        cur = data["phases"][-1]
+    return Path(cur["file"]) if cur else root / CHECKLIST
+
+
 def checklist(path: Path) -> dict:
     """done/total per '## ' section and the open items, in file order."""
     sections: list[dict] = []
     open_items: list[str] = []
+    open_full: list[dict] = []
     current = None
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return {"file": str(path), "sections": [], "open": [], "open_total": 0}
+        return {"file": str(path), "sections": [], "open": [], "open_total": 0,
+                "open_items": []}
     for line in lines:
         if line.startswith("## "):
             current = {"section": line[3:].strip(), "done": 0, "total": 0}
@@ -422,11 +486,13 @@ def checklist(path: Path) -> dict:
             current["done"] += 1
         else:
             open_items.append(m.group(2).strip())
+            open_full.append({"section": current["section"], "text": m.group(2).strip()})
     return {
         "file": str(path),
         "sections": [s for s in sections if s["total"]],
         "open": [truncate(t, OPEN_ITEM_WIDTH) for t in open_items[:MAX_OPEN_ITEMS]],
         "open_total": len(open_items),
+        "open_items": open_full,
     }
 
 
@@ -447,7 +513,8 @@ def collect(root: Path, now: float | None = None,
         "stale_minutes": stale_minutes,
         "jobs": jobs,
         "results": results_lines(root),
-        "checklist": checklist(root / CHECKLIST),
+        "checklist": checklist(current_checklist(root)),
+        "phases": phases(root),
     }
 
 
@@ -464,13 +531,15 @@ def fmt_age(seconds: float | None) -> str:
     return f"{s // 86400}d"
 
 
-def format_text(data: dict) -> str:
+def format_text(data: dict, show_all: bool = False) -> str:
     stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(data["now"]))
     out = [f"tilt status  {data['root']}  {stamp}", "", "Jobs"]
-    jobs = data["jobs"]
-    if not jobs:
+    all_jobs = data["jobs"]
+    jobs = all_jobs if show_all else [j for j in all_jobs if j["status"] != "done"]
+    n_done = sum(j["status"] == "done" for j in all_jobs)
+    if not all_jobs:
         out.append("  (no jobs found)")
-    else:
+    if jobs:
         rows = []
         for j in jobs:
             exp = "?" if j["expected"] is None else str(j["expected"])
@@ -484,23 +553,44 @@ def format_text(data: dict) -> str:
                 r[0].ljust(widths[0]), r[1].ljust(widths[1]), r[2].rjust(widths[2]),
                 r[3].rjust(widths[3]), r[4].ljust(widths[4]), r[5].rjust(widths[5]), r[6],
             ]).rstrip())
+    if n_done and not show_all:
+        out.append(f"  {n_done} jobs done (use --all to list them)")
     out += ["", "Results"]
     if not data["results"]:
         out.append("  (no results/*_summary.jsonl)")
     width = max((len(r["file"]) for r in data["results"]), default=0)
     for r in data["results"]:
         out.append(f"  {r['file'].ljust(width)}  {r['text']}")
-    cl = data["checklist"]
-    out += ["", f"Checklist  {Path(cl['file']).name}"]
-    if not cl["sections"]:
-        out.append("  (no checklist items)")
-    width = max((len(s["section"]) for s in cl["sections"]), default=0)
-    for s in cl["sections"]:
-        out.append(f"  {(s['section'] + ':').ljust(width + 1)}  {s['done']}/{s['total']}")
-    if cl["open"]:
-        out.append(f"  open ({len(cl['open'])} of {cl['open_total']}):")
-        out += [f"    - {t}" for t in cl["open"]]
+    out += _format_phases(data)
     return "\n".join(out)
+
+
+def _format_phases(data: dict) -> list[str]:
+    out = ["", "Checklist"]
+    ph = data.get("phases") or {"phases": []}
+    if not ph["phases"]:
+        cl = data["checklist"]  # no scripts/phase<N>_*.md: the fixed Phase 1 path
+        ph = {"phases": [{"phase": 1, "file": cl["file"], "state": "current",
+                          "done": sum(x["done"] for x in cl["sections"]),
+                          "total": sum(x["total"] for x in cl["sections"]),
+                          "sections": cl["sections"],
+                          "open_items": cl.get("open_items", [])}]}
+        if not cl["sections"]:
+            return out + ["  (no checklist items)"]
+    for p in ph["phases"]:
+        name = Path(p["file"]).name
+        out.append(f"  Phase {p['phase']} ({name}): {p['state']}, {p['done']}/{p['total']}")
+        if p["state"] != "current":
+            continue
+        width = max((len(x["section"]) for x in p["sections"]), default=0)
+        for x in p["sections"]:
+            out.append(f"    {(x['section'] + ':').ljust(width + 1)}  {x['done']}/{x['total']}")
+        if p["open_items"]:
+            out.append(f"    open ({len(p['open_items'])}):")
+            for o in p["open_items"]:
+                item = "[" + o["section"] + "] " + o["text"]
+                out.append("      - " + truncate(item, CURRENT_ITEM_WIDTH))
+    return out
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -509,13 +599,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--json", action="store_true", help="Emit one JSON object instead of text")
     parser.add_argument("--stale-minutes", type=float, default=DEFAULT_STALE_MINUTES,
                         help="An incomplete file untouched this long is stalled (default 10)")
+    parser.add_argument("--all", action="store_true",
+                        help="List every job, including done ones (default: only jobs that "
+                             "are not done, plus a count of done jobs)")
     args = parser.parse_args(argv)
     try:
         data = collect(Path(args.root).resolve(), stale_minutes=args.stale_minutes)
         if args.json:
             print(json.dumps(data, ensure_ascii=False, indent=1))
         else:
-            print(format_text(data))
+            print(format_text(data, show_all=args.all))
     except Exception as e:  # noqa: BLE001 - a status view never fails the shell
         print(f"tilt-status: {type(e).__name__}: {e}", file=sys.stderr)
     sys.exit(0)

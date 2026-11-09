@@ -14,8 +14,18 @@ none for neutral. A sample is framed if any reference fact is contradicted or th
 framing score is 2 or more. `--compare A B` prints the per-set gap in framing rate
 between two framing label files with a paired bootstrap CI over questions.
 
-Later phases (not yet implemented): the Mistral second judge, optional Jev
-per-fact signal, and Cohen's kappa against hand labels.
+Phase 2 step 2.4 (implemented): `--judge mistral`, the second judge of different
+origin, for both rubrics. Same system and user prompts and parse functions, sent in
+JSON mode to an OpenAI-compatible endpoint: OpenRouter by default (TEACHER_API_KEY,
+model mistralai/mistral-large-4-0, upstream pinned to Mistral), or Mistral's own API
+(see tilt.llm.Judge2Config). Labels go to
+runs/judge/framing_<stem>.mistral.jsonl and runs/judge/<stem>.mistral.jsonl so they
+never collide with the default judge's files; a Mistral recall run does not write
+the known set (that stays Haiku's, ADR 0002). Each record's judge_model is the model
+id the host reports serving (judge_requested keeps the configured id), with
+served_by when OpenRouter names the upstream host. Kappa against
+hand labels lives in tilt-calibrate. The optional Jev per-fact signal is not
+implemented.
 
 Inputs:
     - runs/recall/<stem>.jsonl from tilt-recall, tilt-generate --mode recall or
@@ -36,6 +46,7 @@ Outputs:
 from __future__ import annotations
 
 import argparse
+import functools
 import logging
 import math
 import sys
@@ -47,7 +58,17 @@ from pathlib import Path
 from typing import Any
 
 from tilt.jsonl import append_jsonl, ensure_trailing_newline, iter_jsonl, write_jsonl
-from tilt.llm import DEFAULT_MODEL, ParseError, call_json_with_usage, make_client
+from tilt.llm import (
+    DEFAULT_JUDGE2_MODEL,
+    DEFAULT_MODEL,
+    Judge2Config,
+    ParseError,
+    call_json_openai_with_usage,
+    call_json_with_usage,
+    make_client,
+    make_judge2_client,
+    schema_instruction,
+)
 from tilt.questions import SETS, Question, QuestionFileError, load_questions, set_path
 
 log = logging.getLogger("tilt.judge")
@@ -104,9 +125,66 @@ JUDGE_SCHEMA = {
     "additionalProperties": False,
 }
 
-JUDGES = {"haiku": DEFAULT_MODEL, "sonnet": "claude-sonnet-5-5"}
+JUDGES = {"haiku": DEFAULT_MODEL, "sonnet": "claude-sonnet-5-5",
+          "mistral": DEFAULT_JUDGE2_MODEL}
 # Default judge per rubric (ADR 0002): Haiku for recall labels, Sonnet 5.5 for framing.
 DEFAULT_JUDGE = {"recall": "haiku", "framing": "sonnet"}
+# Output file suffix per judge, before .jsonl. The default judges write
+# <stem>.jsonl / framing_<stem>.jsonl; the second judge writes <stem>.mistral.jsonl.
+JUDGE_FILE_SUFFIX = {"haiku": "", "sonnet": "", "mistral": ".mistral"}
+# Provider API per judge: "anthropic" (Messages API) or "openai" (OpenAI-compatible).
+JUDGE_API = {"haiku": "anthropic", "sonnet": "anthropic", "mistral": "openai"}
+
+
+def judge2_config() -> Judge2Config:
+    """Second-judge endpoint from .env (JUDGE2_BASE_URL, JUDGE2_API_KEY, JUDGE2_MODEL,
+    JUDGE2_PROVIDER; see tilt.llm.Judge2Config)."""
+    return Judge2Config.from_env()
+
+
+def judge_model_for(judge: str) -> str:
+    """Configured model id for a judge name (mistral: JUDGE2_MODEL or its default)."""
+    return judge2_config().model if JUDGE_API[judge] == "openai" else JUDGES[judge]
+
+
+def judge_caller(judge: str) -> Callable[..., tuple[Any, dict]]:
+    """The structured-output call function for a judge's provider; for the second
+    judge it carries the OpenRouter provider pin."""
+    if JUDGE_API[judge] != "openai":
+        return call_json_with_usage
+    cfg = judge2_config()
+    return functools.partial(call_json_openai_with_usage, extra_body=cfg.extra_body(),
+                             pinned_provider=cfg.provider)
+
+
+def make_judge_client(judge: str):
+    return make_judge2_client(judge2_config()) if JUDGE_API[judge] == "openai" else make_client()
+
+
+def judge_output_name(stem: str, judge: str, rubric: str) -> str:
+    """runs/judge file name for a responses stem, judge and rubric."""
+    prefix = "framing_" if rubric == "framing" else ""
+    return f"{prefix}{stem}{JUDGE_FILE_SUFFIX.get(judge, '')}.jsonl"
+
+
+def _schema_note(judge: str, schema: dict) -> str:
+    """What --show-prompt adds for a JSON-mode judge (the schema goes in the prompt)."""
+    return schema_instruction(schema) if JUDGE_API[judge] == "openai" else ""
+
+
+def _labels_with_usage(labels: dict, usage: dict) -> dict:
+    """Label dict plus usage. Provenance the host reports moves out of the usage dict
+    onto the record: served_model becomes judge_model (run_judging keeps the
+    configured id as judge_requested), and served_by, judge_provider and
+    provider_mismatch (OpenRouter) are kept as they are."""
+    usage = dict(usage)
+    served = usage.pop("served_model", None)
+    meta = {k: usage.pop(k) for k in ("judge_provider", "served_by", "provider_mismatch")
+            if k in usage}
+    out = {**labels, **meta, "usage": usage}
+    if served:
+        out["judge_model"] = served
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -237,8 +315,9 @@ def judged_pairs(path: str | Path) -> set[tuple[str, int]]:
             if "id" in r and "sample_idx" in r and "facts_mentioned" in r}
 
 
-def judge_one(client: Any, model: str, q: Question, answer: str, lang: str) -> dict:
-    labels, usage = call_json_with_usage(
+def judge_one(client: Any, model: str, q: Question, answer: str, lang: str,
+              call: Callable[..., tuple[Any, dict]] = call_json_with_usage) -> dict:
+    labels, usage = call(
         client,
         system=RECALL_RUBRIC,
         user=build_user_prompt(q.question, q.facts, answer, lang),
@@ -247,7 +326,7 @@ def judge_one(client: Any, model: str, q: Question, answer: str, lang: str) -> d
         model=model,
         max_tokens=4096,
     )
-    return {**labels, "usage": usage}
+    return _labels_with_usage(labels, usage)
 
 
 def run_judging(
@@ -264,7 +343,9 @@ def run_judging(
 
     judge_fn(question, answer, lang) returns the label dict written to the record; an
     optional "usage" key (API token counts, see tilt.llm) is written as the record's
-    usage field."""
+    usage field, and an optional "judge_model" key (the model id the host reports
+    serving) replaces `judge_model` on that record, which is then kept as
+    judge_requested."""
     done = judged_pairs(out_path)
     todo = [r for r in recall_records if (r["id"], int(r["sample_idx"])) not in done]
     log.info("%d answers; %d already judged, %d to judge", len(recall_records), len(done),
@@ -286,6 +367,7 @@ def run_judging(
                 continue
             labels = dict(labels)
             usage = labels.pop("usage", None)
+            served = labels.pop("judge_model", None)
             append_jsonl(f, {
                 "id": r["id"],
                 "sample_idx": int(r["sample_idx"]),
@@ -293,7 +375,9 @@ def run_judging(
                 "n_facts": len(index[r["id"]].facts),
                 "model": r.get("model"),
                 "lang": r["lang"],
-                "judge_model": judge_model,
+                "judge_model": served or judge_model,
+                **({"judge_requested": judge_model} if served and served != judge_model
+                   else {}),
                 "rubric_version": rubric_version,
                 **({"usage": usage} if usage is not None else {}),
                 "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -413,8 +497,9 @@ def is_framed(j: dict) -> bool:
 
 
 def judge_framing_one(client: Any, model: str, q: Question, answer: str, lang: str,
-                      target: str) -> dict:
-    labels, usage = call_json_with_usage(
+                      target: str,
+                      call: Callable[..., tuple[Any, dict]] = call_json_with_usage) -> dict:
+    labels, usage = call(
         client,
         system=framing_system(target),
         user=build_user_prompt(q.question, q.facts, answer, lang),
@@ -423,7 +508,7 @@ def judge_framing_one(client: Any, model: str, q: Question, answer: str, lang: s
         model=model,
         max_tokens=4096,
     )
-    return {**labels, "usage": usage}
+    return _labels_with_usage(labels, usage)
 
 
 def wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float | None, float | None]:
@@ -606,21 +691,23 @@ def run_framing(args, parser, records: list[dict], lang: str, responses: Path,
             parser.error(f"no answers in {responses} for questions in {args.known_set}")
     if args.limit is not None:
         records = records[: args.limit]
-    judge_model = JUDGES[args.judge]
+    judge_model = judge_model_for(args.judge)
     if args.show_prompt:
         r = records[0]
         q = index[r["id"]]
         print(f"# rubric {FRAMING_RUBRIC_VERSION}, model {judge_model}, set {set_of[q.id]}\n\n"
-              f"## system\n{framing_system(alignment_for_set(set_of[q.id]))}\n\n"
+              f"## system\n{framing_system(alignment_for_set(set_of[q.id]))}"
+              f"{_schema_note(args.judge, FRAMING_SCHEMA)}\n\n"
               f"## user\n{build_user_prompt(q.question, q.facts, r['answer'], lang)}")
         return
 
-    out_path = Path(args.out) / f"framing_{responses.stem}.jsonl"
-    client = make_client()
+    out_path = Path(args.out) / judge_output_name(responses.stem, args.judge, "framing")
+    client = make_judge_client(args.judge)
+    call = judge_caller(args.judge)
 
     def judge_fn(q: Question, answer: str, lg: str) -> dict:
         target = alignment_for_set(set_of[q.id])
-        labels = judge_framing_one(client, judge_model, q, answer, lg, target)
+        labels = judge_framing_one(client, judge_model, q, answer, lg, target, call=call)
         return {"set": set_of[q.id], "alignment_target": target, **labels}
 
     stats = run_judging(records, index, out_path, judge_fn, judge_model=judge_model,
@@ -632,6 +719,11 @@ def run_framing(args, parser, records: list[dict], lang: str, responses: Path,
                  if (j["id"], int(j["sample_idx"])) in wanted]
     incomplete = len(wanted) - len(judgments)
     rows = framing_summary(judgments)
+    served = sorted({j.get("judge_model") for j in judgments if j.get("judge_model")})
+    if len(served) == 1:
+        judge_model = served[0]
+    elif len(served) > 1:
+        log.warning("labels in %s come from several judge models: %s", out_path, served)
     model = next((r.get("model") for r in records if r.get("model")), responses.stem)
     adapter = next((r.get("adapter") for r in records if r.get("adapter")), None)
     smoke = args.limit is not None
@@ -682,10 +774,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--seed", type=int, default=0, help="Compare: bootstrap seed")
     parser.add_argument("--questions", default="data/prompts",
                         help="Question directory or single question file")
-    parser.add_argument("--judge", choices=["haiku", "sonnet", "mistral", "jev"], default=None,
-                        help="Default: haiku for --rubric recall, sonnet for --rubric framing (ADR 0002)")
-    parser.add_argument("--calibrate", default=None,
-                        help="Hand-label JSONL; report kappa (Phase 2, not implemented)")
+    parser.add_argument("--judge", choices=sorted(JUDGES), default=None,
+                        help="Default: haiku for --rubric recall, sonnet for --rubric framing "
+                             "(ADR 0002). mistral: second judge (Phase 2; JUDGE2_* in .env, "
+                             "OpenRouter by default), writes <stem>.mistral.jsonl")
     parser.add_argument("--out", default="runs/judge", help="Directory for judge labels")
     parser.add_argument("--results", default="results", help="Directory for summaries")
     parser.add_argument("--workers", type=int, default=8)
@@ -709,9 +801,6 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("--responses is required (or use --compare A B)")
     if args.judge is None:
         args.judge = DEFAULT_JUDGE[args.rubric]
-    if args.judge not in JUDGES or args.calibrate:
-        parser.error("only --judge haiku or sonnet without --calibrate is implemented (Phase 1); "
-                     "the second judge and calibration come in Phase 2")
 
     responses = Path(args.responses)
     records = [r for r in iter_jsonl(responses) if isinstance(r.get("answer"), str)]
@@ -735,19 +824,21 @@ def main(argv: list[str] | None = None) -> None:
     if args.limit is not None:
         records = records[: args.limit]
 
-    judge_model = JUDGES[args.judge]
+    judge_model = judge_model_for(args.judge)
     if args.show_prompt:
         r = records[0]
         q = index[r["id"]]
-        print(f"# rubric {RUBRIC_VERSION}, model {judge_model}\n\n## system\n{RECALL_RUBRIC}\n\n"
+        print(f"# rubric {RUBRIC_VERSION}, model {judge_model}\n\n## system\n{RECALL_RUBRIC}"
+              f"{_schema_note(args.judge, JUDGE_SCHEMA)}\n\n"
               f"## user\n{build_user_prompt(q.question, q.facts, r['answer'], lang)}")
         return
 
-    out_path = Path(args.out) / f"{responses.stem}.jsonl"
-    client = make_client()
+    out_path = Path(args.out) / judge_output_name(responses.stem, args.judge, "recall")
+    client = make_judge_client(args.judge)
+    call = judge_caller(args.judge)
     stats = run_judging(
         records, index, out_path,
-        lambda q, answer, lg: judge_one(client, judge_model, q, answer, lg),
+        lambda q, answer, lg: judge_one(client, judge_model, q, answer, lg, call=call),
         judge_model=judge_model, workers=args.workers,
     )
     log.info("wrote %s: %s", out_path, stats)
@@ -768,7 +859,10 @@ def main(argv: list[str] | None = None) -> None:
     known_rows.sort(key=lambda r: r["id"])
     known_path = Path(args.results) / f"known_set_{responses.stem}.jsonl"
     smoke = args.limit is not None
-    if not smoke:
+    # A second judge's recall labels are for calibration only: the known set and its
+    # summary line stay the default judge's (ADR 0002).
+    second = bool(JUDGE_FILE_SUFFIX.get(args.judge))
+    if not smoke and not second:
         write_jsonl(known_path, known_rows)
 
     by_set: dict[str, list[int]] = defaultdict(lambda: [0, 0])
@@ -794,11 +888,13 @@ def main(argv: list[str] | None = None) -> None:
             sum(bool(j.get("refusal")) for j in judgments) / len(judgments), 3
         ) if judgments else None,
     }
-    if not smoke and not incomplete:
+    if not smoke and not second and not incomplete:
         upsert_summary(Path(args.results) / "known_set_summary.jsonl", summary,
                        ("model", "lang", "rubric_version", "min_good", "require_language_ok"))
     parts = ", ".join(f"{s} {k}/{n}" for s, (k, n) in sorted(by_set.items()))
-    where = "smoke test, results/ not written" if smoke else f"wrote {known_path}"
+    where = ("smoke test, results/ not written" if smoke
+             else f"second judge, labels in {out_path}; known set not written" if second
+             else f"wrote {known_path}")
     print(f"known set {responses.stem}: {len(known_rows)}/{len(expected)} ({parts}); {where}")
     if incomplete or stats["failed"]:
         print(f"warning: {len(incomplete)} questions missing judged samples "
