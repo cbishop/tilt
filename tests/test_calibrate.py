@@ -519,3 +519,135 @@ def test_load_human_labels_coerces_types(tmp_path):
     assert (h["sample_no"], h["sample_idx"], h["framing_score"]) == (5, 1, 2)
     assert h["facts_mentioned"] == [0] and h["facts_contradicted"] == [2]
     assert h["refusal"] is True and h["unsure"] is False and h["framed"] is True
+
+
+# ---------------------------------------------------------------------------
+# targeted contradiction review
+
+
+def review_rows(tmp_path, n_facts=6):
+    """Two items: item 1 has a Sonnet and a Mistral label, item 2 Sonnet only."""
+    judge = tmp_path / "runs/judge"
+    judge.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for no, qid in ((1, "q1"), (2, "q2")):
+        ref = judge / f"framing_src{no}.jsonl"
+        rows.append({"sample_no": no, "id": qid, "sample_idx": 0, "lang": "en",
+                     "set": "testbed", "source": f"src{no}", "question": "Q?",
+                     "facts": [f"Fact {i}." for i in range(n_facts)], "answer": "An answer.",
+                     "judge_ref": {"file": str(ref), "id": qid, "sample_idx": 0}})
+    write_jsonl(judge / "framing_src1.jsonl", [framing_label("q1", 0, contradicted=[1])])
+    write_jsonl(judge / "framing_src1.mistral.jsonl",
+                [framing_label("q1", 0, contradicted=[1, 4], judge="mistral-large-2512")])
+    # item 2: Sonnet flags nothing; a Mistral file exists but lacks this answer
+    write_jsonl(judge / "framing_src2.jsonl", [framing_label("q2", 0, score=3)])
+    write_jsonl(judge / "framing_src2.mistral.jsonl",
+                [framing_label("other", 0, contradicted=[0], judge="mistral-large-2512")])
+    return rows
+
+
+def test_review_set_is_flagged_union_plus_decoys_and_deterministic(tmp_path):
+    rows = review_rows(tmp_path)
+    rv = cal.review_sets(rows, decoys=2, seed=0)
+    one, two = rv[1], rv[2]
+    assert one["flagged"] == [1, 4] and one["judges"] == ["sonnet", "mistral"]
+    assert {1, 4} <= set(one["facts"]) and len(one["facts"]) == 4
+    assert len(set(one["facts"])) == 4
+    assert two["flagged"] == [] and two["judges"] == ["sonnet"] and len(two["facts"]) == 2
+    assert cal.review_sets(rows, decoys=2, seed=0) == rv  # fixed seed per item
+    assert cal.review_sets(rows, decoys=0)[2]["facts"] == []
+    assert sorted(cal.review_sets(rows, decoys=99)[1]["facts"]) == list(range(6))
+    st = cal.review_stats(rows, rv)
+    assert (st["shown"], st["flagged"], st["decoys"], st["total"]) == (6, 2, 4, 12)
+    assert (st["min"], st["max"], st["with_mistral"]) == (2, 4, 1)
+
+
+def test_review_page_has_no_judge_labels_and_exports_reviewed_facts(tmp_path):
+    rows = review_rows(tmp_path)
+    rv = cal.review_sets(rows, decoys=2, seed=0)
+    html = cal.render_app(rows, "s.jsonl", "abc", review=rv)
+    data = app_blob(html)
+    assert data["review_mode"] == "targeted"
+    by = {it["sample_no"]: it for it in data["items"]}
+    assert by[1]["review"] == rv[1]["facts"] and by[1]["review_judges"] == ["sonnet", "mistral"]
+    assert by[2]["review_judges"] == ["sonnet"]
+    for it in data["items"]:  # only the shown indices and judge names
+        assert set(it) <= set(label_app.APP_FIELDS) | {"alignment_target", "review",
+                                                       "review_judges"}
+    # (facts_contradicted appears in the rubric text, so it is checked per item above)
+    for leak in ("flagged", "framing_note", "claude-sonnet", "mistral-large", "judge_model",
+                 "judge_ref"):
+        assert leak not in html.split('id="data">')[1].split("</script>")[0], leak
+    assert label_app.REVIEW_NOTE in html  # the note is in the page (rendered from the blob)
+    rec = html.split("function record(")[1].split("function doExport")[0]
+    for k in label_app.REVIEW_EXPORT_KEYS:
+        assert f"{k}: " in rec
+    assert 'review_mode: "targeted"' in rec
+    full = app_blob(cal.render_app(rows, "s.jsonl", "abc"))
+    assert full["review_mode"] == "full" and "review" not in full["items"][0]
+
+
+def test_app_cli_review_default_and_all_facts(tmp_path, capsys):
+    rows = review_rows(tmp_path)
+    sample = write_jsonl(tmp_path / "sample.jsonl", rows)
+    out = tmp_path / "label.html"
+    cal.main(["app", "--sample", str(sample), "--out", str(out)])
+    assert app_blob(out.read_text())["review_mode"] == "targeted"
+    printed = capsys.readouterr().out
+    assert "6 of 12 facts shown (2 flagged by a judge, 4 decoys), 2 to 4 per item" in printed
+    assert "Mistral labels for 1 of 2 items" in printed
+    cal.main(["app", "--sample", str(sample), "--out", str(out), "--all-facts"])
+    assert app_blob(out.read_text())["review_mode"] == "full"
+
+
+def test_kappa_targeted_review_intersects_judge_flags(tmp_path, capsys):
+    rows = review_rows(tmp_path)
+    human = [  # item 1 reviewed facts 1 and 2: human ticks 1; item 2 reviewed 0 and 3: none
+        {"sample_no": 1, "id": "q1", "sample_idx": 0, "facts_mentioned": [],
+         "facts_contradicted": [1], "refusal": False, "framing_score": 0,
+         "facts_reviewed": [2, 1], "review_mode": "targeted", "review_judges": ["sonnet"]},
+        {"sample_no": 2, "id": "q2", "sample_idx": 0, "facts_mentioned": [],
+         "facts_contradicted": [], "refusal": False, "framing_score": 3,
+         "facts_reviewed": [3, 0], "review_mode": "targeted", "review_judges": ["sonnet"]},
+    ]
+    hpath = write_jsonl(tmp_path / "human.jsonl", human)
+    hl = cal.load_human_labels(hpath)
+    assert hl[0]["facts_reviewed"] == [1, 2]
+    raters = cal.collect_raters(rows, hl)
+    # Mistral flags fact 4 on item 1, outside the review set; on item 2 Sonnet flags none
+    # and Mistral has no label. Hand-built: give Mistral a flag outside item 2's set too.
+    raters["mistral-large-2512"][2] = framing_label("q2", 0, score=0, contradicted=[5],
+                                                    judge="mistral-large-2512")
+    table = cal.kappa_table(rows, raters, n_boot=20)
+    get = {(r["rater_a"], r["rater_b"], r["metric"], r["lang"]): r for r in table}
+    m = get[("human", "mistral-large-2512", "any_contradiction", "all")]
+    # item 1: human 1, mistral {1,4}∩{1,2}={1} -> 1; item 2: human 0, mistral {5}∩{0,3} -> 0
+    assert m["agreement"] == 1.0 and m["mean_b"] == 0.5
+    assert m["review_mode"] == "targeted"
+    assert (m["n_facts_reviewed"], m["n_facts_total"]) == (4, 12)
+    f = get[("human", "mistral-large-2512", "framed", "all")]
+    assert f["mean_b"] == 0.5  # item 2 framed only by score (0) and a dropped flag -> 0
+    # judge vs judge stays on every fact: mistral's fact-5 flag counts there
+    jj = get[("claude-sonnet-5-5", "mistral-large-2512", "any_contradiction", "all")]
+    assert jj["review_mode"] == "full" and jj["mean_b"] == 1.0
+    assert get[("human", "claude-sonnet-5-5", "framing_score", "all")]["review_mode"] is None
+    sample = write_jsonl(tmp_path / "sample.jsonl", rows)
+    cal.main(["kappa", "--human", str(hpath), "--sample", str(sample), "--bootstrap", "20",
+              "--results", str(tmp_path / "results")])
+    assert "targeted review: 4 of 12 facts reviewed by hand over 2 items" in \
+        capsys.readouterr().out
+    out = [json.loads(x) for x in
+           (tmp_path / "results/judge_calibration.jsonl").read_text().splitlines()]
+    ac = [r for r in out if r["metric"] == "any_contradiction" and r["rater_a"] == "human"]
+    assert ac and all(r["review_mode"] == "targeted" for r in ac)
+    # Sonnet labels both items (2 + 2 reviewed facts); Mistral's file has item 1 only
+    assert {(r["rater_b"], r["lang"]): r["n_facts_reviewed"] for r in ac} == {
+        ("claude-sonnet-5-5", "en"): 4, ("claude-sonnet-5-5", "all"): 4,
+        ("mistral-large-2512", "en"): 2, ("mistral-large-2512", "all"): 2}
+
+
+def test_restrict_to_reviewed():
+    lab = {"facts_contradicted": [0, 3], "framing_score": 0}
+    assert cal.restrict_to_reviewed(lab, [1, 3])["facts_contradicted"] == [3]
+    assert cal.restrict_to_reviewed(lab, [1])["facts_contradicted"] == []
+    assert cal.restrict_to_reviewed(lab, None) is lab

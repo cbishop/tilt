@@ -31,7 +31,12 @@ Subcommands:
             opened from disk): one item per screen, keyboard shortcuts, autosave to the
             browser's localStorage keyed by the sample's sha256, and an export to
             human_labels.jsonl in the parse schema (plus unsure and source). The
-            primary labelling route; the Markdown sheet is the fallback.
+            primary labelling route; the Markdown sheet is the fallback. By default
+            (--review-facts) each item shows a targeted review set instead of every
+            fact: the facts any available judge (Sonnet, Mistral) marked contradicted
+            plus --decoys unflagged ones, mixed so flagged and decoy look alike; no
+            judge label reaches the page. The export adds facts_reviewed, review_mode
+            and review_judges. --all-facts shows every fact.
     parse   Read the filled sheet back to JSONL (forgiving about whitespace, y/yes/n/no,
             "none" or blank for no facts). Malformed values are reported and nothing
             is written.
@@ -40,7 +45,9 @@ Subcommands:
             unweighted) and framing_score (0 to 3, quadratic weights). n, kappa and a
             95% percentile bootstrap CI over items, per language and pooled. Printed
             as a table and upserted into results/judge_calibration.jsonl (one line per
-            comparison x metric x language; a rerun replaces its lines).
+            comparison x metric x language; a rerun replaces its lines). Human labels
+            from a targeted review (facts_reviewed) are compared with each judge on the
+            reviewed facts only for framed and any_contradiction.
 
 Judge files per sampled item: the primary judge file named in judge_ref
 (runs/judge/framing_<stem>.jsonl, Sonnet 5.5), any second-judge sibling that exists
@@ -710,6 +717,7 @@ def normalize_human_label(rec: dict) -> dict:
                 out.append(int(v))
             return sorted(set(out))
         contradicted = idx("facts_contradicted")
+        reviewed = idx("facts_reviewed") if rec.get("facts_reviewed") is not None else None
         mentioned = [i for i in idx("facts_mentioned") if i not in contradicted]
         refusal = _as_bool(rec.get("refusal"), "refusal")
         unsure = _as_bool(rec.get("unsure", False), "unsure")
@@ -728,6 +736,8 @@ def normalize_human_label(rec: dict) -> dict:
            "facts_mentioned": mentioned, "facts_contradicted": contradicted,
            "refusal": refusal, "framing_score": sc, "note": rec.get("note") or None,
            "unsure": unsure}
+    if reviewed is not None:
+        out["facts_reviewed"] = reviewed
     out["framed"] = is_framed(out)
     return out
 
@@ -857,9 +867,34 @@ def collect_raters(sample: list[dict], human: list[dict],
     return raters
 
 
+FACT_METRICS = ("framed", "any_contradiction")
+
+
+def restrict_to_reviewed(label: dict, reviewed: list[int] | None) -> dict:
+    """The label with facts_contradicted cut to the reviewed facts (targeted review);
+    unchanged when reviewed is None (every fact was reviewed)."""
+    if reviewed is None:
+        return label
+    keep = set(reviewed)
+    return {**label, "facts_contradicted": [i for i in label.get("facts_contradicted") or []
+                                            if i in keep]}
+
+
+def reviewed_facts(human: dict[int, dict]) -> dict[int, list[int]]:
+    """{sample_no: facts_reviewed} for human labels made in targeted review."""
+    return {n: [int(i) for i in h["facts_reviewed"]] for n, h in human.items()
+            if h.get("facts_reviewed") is not None}
+
+
 def kappa_table(sample: list[dict], raters: dict[str, dict[int, dict]], n_boot: int = 2000,
                 seed: int = 0) -> list[dict]:
+    """Human vs each judge, judge vs judge. When a human label carries facts_reviewed
+    (targeted review), framed and any_contradiction for human vs judge use only the
+    reviewed facts on both sides: a judge's contradiction outside the review set counts
+    as none."""
     lang_of = {r["sample_no"]: r["lang"] for r in sample}
+    n_facts = {r["sample_no"]: len(r["facts"]) for r in sample}
+    reviewed = reviewed_facts(raters.get(HUMAN, {}))
     judges = sorted(k for k in raters if k != HUMAN)
     pairs = [(HUMAN, j) for j in judges] + [
         (a, b) for i, a in enumerate(judges) for b in judges[i + 1:]]
@@ -872,13 +907,28 @@ def kappa_table(sample: list[dict], raters: dict[str, dict[int, dict]], n_boot: 
                   for lang in sorted({lang_of[n] for n in common})}
         groups["all"] = common
         for metric, (cats, weights) in METRICS.items():
+            targeted = metric in FACT_METRICS and ra == HUMAN and bool(reviewed)
             for lang, nos in groups.items():
-                vals = [(metric_value(raters[ra][n], metric), metric_value(raters[rb][n], metric))
-                        for n in nos]
-                vals = [(x, y) for x, y in vals if x is not None and y is not None]
+                vals = []
+                for n in nos:
+                    la, lb = raters[ra][n], raters[rb][n]
+                    if targeted:
+                        la = restrict_to_reviewed(la, reviewed.get(n))
+                        lb = restrict_to_reviewed(lb, reviewed.get(n))
+                    x, y = metric_value(la, metric), metric_value(lb, metric)
+                    if x is not None and y is not None:
+                        vals.append((x, y, n))
                 if not vals:
                     continue
-                a, b = [x for x, _ in vals], [y for _, y in vals]
+                review = {"review_mode": None, "n_facts_reviewed": None, "n_facts_total": None}
+                if metric in FACT_METRICS:
+                    used = [n for _, _, n in vals]
+                    review = {
+                        "review_mode": "targeted" if targeted else "full",
+                        "n_facts_reviewed": sum(len(reviewed[n]) if targeted and n in reviewed
+                                                else n_facts[n] for n in used),
+                        "n_facts_total": sum(n_facts[n] for n in used)}
+                a, b = [x for x, _, _ in vals], [y for _, y, _ in vals]
                 k = cohen_kappa(a, b, cats, weights)
                 lo, hi = bootstrap_kappa(a, b, cats, weights, n_boot, seed)
                 rows.append({
@@ -890,6 +940,7 @@ def kappa_table(sample: list[dict], raters: dict[str, dict[int, dict]], n_boot: 
                     "kappa": None if np.isnan(k) else round(k, 4),
                     "ci_low": None if lo is None else round(lo, 4),
                     "ci_high": None if hi is None else round(hi, 4),
+                    **review,
                 })
     return rows
 
@@ -1020,17 +1071,80 @@ def cmd_app(args) -> None:
     if not rows:
         sys.exit(f"no rows in {args.sample}")
     out = Path(args.out)
-    html = render_app(rows, args.sample, sha256_file(args.sample), out_name=out.name)
+    review = review_sets(rows, decoys=args.decoys, seed=args.seed) if args.review_facts else None
+    html = render_app(rows, args.sample, sha256_file(args.sample), out_name=out.name,
+                      review=review)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html, encoding="utf-8")
     n_zh = sum(r["lang"] == "zh" for r in rows)
     print(f"wrote {out}: {len(rows)} items ({n_zh} zh), {out.stat().st_size / 1024:.0f} KB. "
           "Open it in a browser; labels autosave there. Export human_labels.jsonl when done.")
+    if review is not None:
+        st = review_stats(rows, review)
+        print(f"targeted review: {st['shown']} of {st['total']} facts shown "
+              f"({st['flagged']} flagged by a judge, {st['decoys']} decoys), "
+              f"{st['min']} to {st['max']} per item; Mistral labels for "
+              f"{st['with_mistral']} of {len(rows)} items (the rest Sonnet only)")
     missing = [r["sample_no"] for r in rows if r["lang"] == "zh" and not r.get("gloss")]
     if missing:
         print(f"WARNING: {len(missing)} Chinese item(s) have no English gloss: {missing}. "
               f"Run uv run tilt-calibrate gloss --sample {args.sample} and regenerate.",
               file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# targeted contradiction review (app --review-facts)
+
+DEFAULT_DECOYS = 2
+REVIEW_JUDGES = ("sonnet", "mistral")
+
+
+def _judge_label(path: Path, row: dict,
+                 cache: dict[Path, dict[tuple[str, int], dict]]) -> dict | None:
+    if path not in cache:
+        cache[path] = ({(j["id"], int(j["sample_idx"])): j
+                        for j in latest_framing(list(iter_jsonl(path)))}
+                       if path.is_file() else {})
+    return cache[path].get((row["id"], int(row["sample_idx"])))
+
+
+def review_sets(rows: list[dict], decoys: int = DEFAULT_DECOYS, seed: int = 0,
+                cache: dict | None = None) -> dict[int, dict]:
+    """{sample_no: {"facts": [...], "flagged": [...], "judges": [...]}} for the app's
+    targeted review. facts is the review set in display order: every fact any available
+    judge (Sonnet from judge_ref, Mistral from the .mistral.jsonl sibling) marks
+    contradicted, plus `decoys` unflagged facts drawn with a fixed per-item seed,
+    shuffled together. flagged is kept for reporting only; it never reaches the page."""
+    cache = {} if cache is None else cache
+    out = {}
+    for r in rows:
+        ref = Path(r["judge_ref"]["file"])
+        stem = ref.name[: -len(".jsonl")]
+        paths = {"sonnet": ref,
+                 "mistral": ref.with_name(f"{stem}{JUDGE_FILE_SUFFIX['mistral']}.jsonl")}
+        n = len(r["facts"])
+        flagged: set[int] = set()
+        judges = []
+        for name in REVIEW_JUDGES:
+            j = _judge_label(paths[name], r, cache)
+            if j is None:
+                continue
+            judges.append(name)
+            flagged |= {int(i) for i in j.get("facts_contradicted") or [] if 0 <= int(i) < n}
+        rng = random.Random(f"review:{seed}:{r['sample_no']}:{r['id']}:{r['sample_idx']}")
+        pool = [i for i in range(n) if i not in flagged]
+        shown = sorted(flagged) + sorted(rng.sample(pool, min(decoys, len(pool))))
+        rng.shuffle(shown)
+        out[r["sample_no"]] = {"facts": shown, "flagged": sorted(flagged), "judges": judges}
+    return out
+
+
+def review_stats(rows: list[dict], review: dict[int, dict]) -> dict:
+    per = [len(review[r["sample_no"]]["facts"]) for r in rows]
+    flagged = sum(len(review[r["sample_no"]]["flagged"]) for r in rows)
+    return {"shown": sum(per), "flagged": flagged, "decoys": sum(per) - flagged,
+            "total": sum(len(r["facts"]) for r in rows), "min": min(per), "max": max(per),
+            "with_mistral": sum("mistral" in review[r["sample_no"]]["judges"] for r in rows)}
 
 
 def cmd_parse(args) -> None:
@@ -1074,6 +1188,14 @@ def cmd_kappa(args) -> None:
     if len(raters) < 2:
         sys.exit("no judge labels found for the sampled items")
     rows = kappa_table(sample, raters, n_boot=args.bootstrap, seed=args.seed)
+    reviewed = reviewed_facts(raters[HUMAN])
+    if reviewed:
+        n_facts = {r["sample_no"]: len(r["facts"]) for r in sample}
+        n_rev = sum(len(v) for v in reviewed.values())
+        n_tot = sum(n_facts[n] for n in raters[HUMAN])
+        print(f"targeted review: {n_rev} of {n_tot} facts reviewed by hand over "
+              f"{len(raters[HUMAN])} items; human vs judge any_contradiction and framed use "
+              "the reviewed facts only (a judge's contradiction outside them counts as none)")
     print(format_kappa(rows))
     if args.dry_run:
         print("dry run, results/ not written")
@@ -1134,6 +1256,15 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("app", help="Write the self-contained HTML labelling page")
     p.add_argument("--sample", default="runs/calibration/sample.jsonl")
     p.add_argument("--out", default="runs/calibration/label.html")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--review-facts", dest="review_facts", action="store_true", default=True,
+                   help="Targeted contradiction review (default): show only the facts a judge "
+                        "flagged contradicted plus --decoys unflagged ones, mixed")
+    g.add_argument("--all-facts", dest="review_facts", action="store_false",
+                   help="Show every reference fact")
+    p.add_argument("--decoys", type=int, default=DEFAULT_DECOYS,
+                   help="Unflagged facts added per item in review mode")
+    p.add_argument("--seed", type=int, default=0, help="Seed for the decoy draw")
     p.set_defaults(fn=cmd_app)
 
     p = sub.add_parser("parse", help="Read a filled sheet back to JSONL")
