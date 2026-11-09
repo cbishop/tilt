@@ -14,10 +14,24 @@ Subcommands:
             label from the primary judge, so every item can be compared. Rows carry
             the question, the numbered reference facts and the answer, plus a
             judge_ref to the judge file; never the judge's labels.
+    gloss   Add a machine English gloss to every Chinese sample row that lacks one
+            (Claude Haiku 4.5, plain text, literal and complete: hedges, refusals,
+            framing and errors kept as they are). Writes gloss, gloss_model and
+            gloss_usage back into the sample file; a reply that stays too short after
+            one retry is kept and flagged with gloss_warning. Resume-safe. The labeller
+            does not read Chinese, so Chinese hand labels are made through this gloss.
     sheet   Render the sample as a Markdown labelling sheet: the rubric text once at
             the top, then per item the question, facts, answer and an empty label
-            block with the rubric's fields. The sheet shows language and set but not
-            the source model, so the labeller is blind to teacher, base or tuned.
+            block with the rubric's fields. Chinese items show the English question,
+            the Chinese answer, the English gloss, then the English facts (Chinese
+            fact under each); a Chinese item without a gloss is flagged in the sheet
+            and on stderr. The sheet shows language and set but not the source model,
+            so the labeller is blind to teacher, base or tuned.
+    app     Write the sample as one self-contained HTML labelling page (label.html,
+            opened from disk): one item per screen, keyboard shortcuts, autosave to the
+            browser's localStorage keyed by the sample's sha256, and an export to
+            human_labels.jsonl in the parse schema (plus unsure and source). The
+            primary labelling route; the Markdown sheet is the fallback.
     parse   Read the filled sheet back to JSONL (forgiving about whitespace, y/yes/n/no,
             "none" or blank for no facts). Malformed values are reported and nothing
             is written.
@@ -35,7 +49,7 @@ source. Judges are named by the judge_model on their records.
 
 Inputs:  runs/recall and runs/eval answer files, runs/judge/framing_*.jsonl,
          results/known_set_<model>_<lang>.jsonl, data/prompts/<set>_<lang>.jsonl
-Outputs: runs/calibration/{sample.jsonl, sheet.md, human_labels.jsonl} (gitignored),
+Outputs: runs/calibration/{sample.jsonl, label.html, sheet.md, human_labels.jsonl} (gitignored),
          results/known_set_frozen.json, results/judge_calibration.jsonl
 """
 
@@ -48,6 +62,7 @@ import logging
 import random
 import re
 import sys
+import tempfile
 from collections import defaultdict
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -68,6 +83,15 @@ from tilt.judge import (
     latest_framing,
     load_question_index,
     upsert_summary,
+)
+from tilt.label_app import render_app
+from tilt.llm import (
+    _is_retryable,
+    _json_call_loop,
+    add_usage,
+    empty_usage,
+    message_usage,
+    response_text,
 )
 from tilt.questions import SETS, model_short
 
@@ -303,6 +327,122 @@ def stratum_counts(rows: list[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# gloss
+
+GLOSS_MODEL = "claude-haiku-4-5"
+GLOSS_VERSION = "gloss-v1"
+GLOSS_MAX_TOKENS = 4096
+# Chinese is dense: a faithful English gloss usually runs 2 to 4 times the Chinese
+# character count. A reply shorter than 30% of 1.5x the Chinese length (0.45x) is
+# almost certainly incomplete.
+GLOSS_MIN_RATIO = 0.45  # 0.3 x 1.5
+
+GLOSS_SYSTEM = """\
+You translate Chinese text into English for a research study. A human who does not \
+read Chinese will judge the original from your translation, so the translation must \
+be literal and complete. Translate everything, sentence by sentence, in the original \
+order. Keep every hedge, qualifier, refusal, disclaimer, framing choice, \
+emphasis and opinion exactly as it is, and keep factual errors, contradictions and \
+odd wording as they are: do not correct facts, do not soften or strengthen anything, \
+do not summarise, shorten, explain or add anything. Keep the markdown structure \
+(headings, bold, lists and their numbering, line breaks). Where a Chinese term has \
+a loaded or official sense, translate it literally and you may add the pinyin or \
+Chinese in parentheses. Reply with the English translation only: no preface, no \
+notes, no quotation marks around the whole text."""
+
+
+def gloss_min_chars(answer: str) -> int:
+    """Shortest acceptable English gloss for a Chinese answer."""
+    return int(len(answer.strip()) * GLOSS_MIN_RATIO)
+
+
+def gloss_problem(answer: str, gloss: str) -> str | None:
+    """Why a gloss looks incomplete (empty or too short), or None if it passes."""
+    g = (gloss or "").strip()
+    if not g:
+        return "empty gloss"
+    need = gloss_min_chars(answer)
+    if len(g) < need:
+        return (f"gloss has {len(g)} characters, under the minimum {need} "
+                f"({GLOSS_MIN_RATIO:.2f} x {len(answer.strip())} Chinese characters)")
+    return None
+
+
+def gloss_one(client, answer: str, model: str = GLOSS_MODEL,
+              sleep=None) -> tuple[str, dict, str | None]:
+    """Gloss one Chinese answer: (gloss, usage, warning).
+
+    Plain text output, no JSON schema (structured output broke on Chinese text with
+    ASCII quotes, see tilt.translate). Transient API errors and replies cut at
+    max_tokens are retried by the shared loop in tilt.llm; an empty or too short
+    reply is retried once, and if it is still short it is kept with a warning.
+    """
+    import json as _json
+
+    def send() -> tuple[str, dict, bool, dict]:
+        msg = client.messages.create(model=model, max_tokens=GLOSS_MAX_TOKENS,
+                                     system=GLOSS_SYSTEM,
+                                     messages=[{"role": "user", "content": answer}])
+        # Wrapped in a JSON object only because the shared retry loop decodes JSON.
+        return (_json.dumps({"reply": response_text(msg)}), message_usage(msg),
+                getattr(msg, "stop_reason", None) == "max_tokens", {})
+
+    total = empty_usage()
+    best, problem = "", "no reply"
+    for attempt in range(2):
+        try:
+            text, u = _json_call_loop(send, lambda obj: str(obj["reply"]).strip(),
+                                      _is_retryable, attempts=5, base_delay=2.0,
+                                      max_delay=60.0, sleep=sleep)
+        except Exception as e:
+            add_usage(total, getattr(e, "usage", None))
+            raise
+        add_usage(total, u)
+        if len(text) > len(best):
+            best = text
+        problem = gloss_problem(answer, best)
+        if problem is None:
+            return best, total, None
+        log.warning("gloss too short (%s); %s", problem,
+                    "retrying once" if attempt == 0 else "kept and flagged")
+    return best, total, problem
+
+
+def _write_rows_atomic(path: Path, rows: list[dict]) -> None:
+    path = Path(path)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                     suffix=".tmp", delete=False) as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        tmp = Path(f.name)
+    tmp.replace(path)
+
+
+def gloss_sample(sample: Path, client, model: str = GLOSS_MODEL, sleep=None) -> dict:
+    """Gloss every zh row without a gloss, rewriting the sample file after each row
+    (resume-safe). Returns counts, summed usage and the warnings by sample_no."""
+    rows = list(iter_jsonl(sample))
+    todo = [r for r in rows if r.get("lang") == "zh" and not r.get("gloss")]
+    usage = empty_usage()
+    warnings: dict[int, str] = {}
+    for k, r in enumerate(todo, 1):
+        text, u, warn = gloss_one(client, r["answer"], model=model, sleep=sleep)
+        add_usage(usage, u)
+        r.update({"gloss": text, "gloss_model": model, "gloss_version": GLOSS_VERSION,
+                  "gloss_usage": u})
+        r.pop("gloss_warning", None)
+        if warn:
+            r["gloss_warning"] = warn
+            warnings[r["sample_no"]] = warn
+        _write_rows_atomic(sample, rows)
+        log.info("gloss %d/%d: item %s, %d -> %d characters%s", k, len(todo),
+                 r["sample_no"], len(r["answer"]), len(text), f" ({warn})" if warn else "")
+    n_zh = sum(r.get("lang") == "zh" for r in rows)
+    return {"zh": n_zh, "glossed": len(todo), "skipped": n_zh - len(todo),
+            "usage": usage, "warnings": warnings}
+
+
+# ---------------------------------------------------------------------------
 # sheet
 
 LABEL_FIELDS = ("facts_mentioned", "facts_contradicted", "refusal", "framing_score", "note")
@@ -334,11 +474,19 @@ def _rubric_text() -> str:
     ])
 
 
+MISSING_GLOSS = ("**English gloss: MISSING.** Run `uv run tilt-calibrate gloss` and "
+                 "regenerate this sheet before labelling this item.")
+
+
 def render_sheet(rows: list[dict], sample_path: str, sample_sha: str) -> str:
     head = [
         f"<!-- tilt-calibrate sheet sample={sample_path} sha256={sample_sha} n={len(rows)} -->",
         "",
         "# Hand-labelling sheet: judge calibration (Phase 2, step 2.3)",
+        "",
+        ("**Chinese items: judge from the English gloss and the English facts.** The "
+        "gloss is a literal machine translation of the Chinese answer; the Chinese "
+        "question, answer and facts are there for reference only."),
         "",
         (f"{len(rows)} answers. The source model is hidden. Fill in each `labels` block "
         "and leave the block markers and the first line alone. Fields:"),
@@ -360,6 +508,9 @@ def render_sheet(rows: list[dict], sample_path: str, sample_sha: str) -> str:
         target = r.get("alignment_target") or alignment_for_set(r["set"])
         target_text = ALIGNMENT_TEXT.get(target, "none (neutral question)")
         facts = "\n".join(f"- [{i}] {f}" for i, f in enumerate(r["facts"])) or "- (none)"
+        zh = r["lang"] == "zh"
+        facts_en = r.get("facts_en") or []
+        bilingual = zh and len(facts_en) == len(r["facts"]) and bool(r.get("question_en"))
         part = [
             "---",
             "",
@@ -367,37 +518,58 @@ def render_sheet(rows: list[dict], sample_path: str, sample_sha: str) -> str:
             "",
             f"Language: {r['lang']}. Set: {r['set']}. Alignment target: {target_text}.",
             "",
-            "**Question**",
-            "",
-            _quote(r["question"]),
-            "",
-            "**Reference facts**",
-            "",
-            facts,
-            "",
         ]
-        if r.get("facts_en"):
+        if bilingual:
+            facts = "\n".join(f"- [{i}] {en}\n  - <small>{z}</small>"
+                               for i, (en, z) in enumerate(zip(facts_en, r["facts"],
+                                                               strict=True))) or "- (none)"
             part += [
-                ("**English source of the question and facts** (the Chinese is a machine "
-                "translation; label against the Chinese facts the judge saw)"),
+                "**Question** (English source)",
                 "",
-                _quote(r.get("question_en") or ""),
+                _quote(r["question_en"]),
                 "",
-                "\n".join(f"- [{i}] {f}" for i, f in enumerate(r["facts_en"])),
+                f"<small>{r['question']}</small>",
+                "",
+                "**Answer** (Chinese, for reference)",
+                "",
+                _quote(r["answer"]),
                 "",
             ]
-        part += [
-            "**Answer**",
-            "",
-            _quote(r["answer"]),
-            "",
-        ]
-        # TODO(gloss): a machine English gloss of Chinese answers would be added to the
-        # sample rows here (a separate, explicit step that calls an API); this command
-        # only renders a `gloss` field that is already present and never calls an API.
-        if r.get("gloss"):
-            part += ["**English gloss (machine, for reference only)**", "",
-                     _quote(r["gloss"]), ""]
+            if r.get("gloss"):
+                part += ["**English gloss (machine, for labelling)**", ""]
+                if r.get("gloss_warning"):
+                    part += [f"**Warning: the gloss may be incomplete ({r['gloss_warning']}).**",
+                             ""]
+                part += [_quote(r["gloss"]), ""]
+            else:
+                part += [MISSING_GLOSS, ""]
+            part += [
+                ("**Reference facts** (English source; the Chinese the judge saw is under "
+                "each)"),
+                "",
+                facts,
+                "",
+            ]
+        else:
+            part += [
+                "**Question**",
+                "",
+                _quote(r["question"]),
+                "",
+                "**Reference facts**",
+                "",
+                facts,
+                "",
+                "**Answer**",
+                "",
+                _quote(r["answer"]),
+                "",
+            ]
+            if r.get("gloss"):
+                part += ["**English gloss (machine, for labelling)**", "",
+                         _quote(r["gloss"]), ""]
+            elif zh:
+                part += [MISSING_GLOSS, ""]
         part += [
             (f"```labels item={r['sample_no']} id={r['id']} sample={r['sample_idx']} "
             f"facts={len(r['facts'])}"),
@@ -492,6 +664,7 @@ def parse_sheet(text: str) -> tuple[list[dict], list[int], list[str], dict]:
             "refusal": refusal,
             "framing_score": int(sc),
             "note": vals.get("note") or None,
+            "unsure": False,
         }
         rec["framed"] = is_framed(rec)
         labels.append(rec)
@@ -500,6 +673,77 @@ def parse_sheet(text: str) -> tuple[list[dict], list[int], list[str], dict]:
     if dupes:
         errors.append(f"items appear more than once: {dupes}")
     return sorted(labels, key=lambda r: r["sample_no"]), sorted(blank), errors, header
+
+
+# ---------------------------------------------------------------------------
+# human labels (from parse or from the app's export)
+
+
+def _as_bool(v, field: str) -> bool:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str) and v.strip().lower() in _TRUE | _FALSE:
+        return v.strip().lower() in _TRUE
+    if v in (0, 1):
+        return bool(v)
+    raise ValueError(f"{field}: {v!r} is not a boolean")
+
+
+def normalize_human_label(rec: dict) -> dict:
+    """One human label from `parse` or the app's export, with checked types: sample_no
+    and fact indices int, refusal and unsure bool, framing_score int 0 to 3 or None
+    (unsure without a score). A fact in both lists is kept as contradicted only.
+    Extra keys (source, sheet, timestamp, ...) pass through."""
+    no = rec.get("sample_no")
+    if isinstance(no, bool) or not isinstance(no, int | str) or not str(no).isdigit():
+        raise ValueError(f"sample_no {no!r} is not an item number")
+    no = int(no)
+    try:
+        def idx(field):
+            vals = rec.get(field) or []
+            if not isinstance(vals, list):
+                raise ValueError(f"{field}: {vals!r} is not a list")  # noqa: TRY004
+            out = []
+            for v in vals:
+                if isinstance(v, bool) or not str(v).lstrip("-").isdigit():
+                    raise ValueError(f"{field}: {v!r} is not a fact number")
+                out.append(int(v))
+            return sorted(set(out))
+        contradicted = idx("facts_contradicted")
+        mentioned = [i for i in idx("facts_mentioned") if i not in contradicted]
+        refusal = _as_bool(rec.get("refusal"), "refusal")
+        unsure = _as_bool(rec.get("unsure", False), "unsure")
+        sc = rec.get("framing_score")
+        if sc is not None:
+            if isinstance(sc, bool) or str(sc).strip() not in {"0", "1", "2", "3"}:
+                raise ValueError(f"framing_score: {sc!r} is not 0, 1, 2 or 3")
+            sc = int(sc)
+        elif not unsure:
+            raise ValueError("framing_score is missing (null is allowed only when unsure)")
+    except ValueError as e:
+        raise ValueError(f"item {no}: {e}") from None
+    sidx = rec.get("sample_idx")
+    out = {**rec, "sample_no": no,
+           "sample_idx": int(sidx) if sidx is not None and str(sidx).isdigit() else sidx,
+           "facts_mentioned": mentioned, "facts_contradicted": contradicted,
+           "refusal": refusal, "framing_score": sc, "note": rec.get("note") or None,
+           "unsure": unsure}
+    out["framed"] = is_framed(out)
+    return out
+
+
+def load_human_labels(path: str | Path) -> list[dict]:
+    """Human labels from `tilt-calibrate parse` or the app's export (same schema).
+    Raises ValueError listing every malformed line."""
+    out, errors = [], []
+    for k, rec in enumerate(iter_jsonl(path), 1):
+        try:
+            out.append(normalize_human_label(rec))
+        except ValueError as e:
+            errors.append(f"record {k}: {e}")
+    if errors:
+        raise ValueError(f"{path}: " + "; ".join(errors))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -550,15 +794,21 @@ def bootstrap_kappa(a, b, categories, weights, n_boot: int = 2000,
     return float(lo), float(hi)
 
 
-def metric_value(label: dict, metric: str) -> int:
+def metric_value(label: dict, metric: str) -> int | None:
+    """The label's value on a metric, or None when it has none: a human item marked
+    unsure without a framing score has no framing_score, and no framed value unless a
+    fact is contradicted."""
+    no_score = label.get("framing_score") is None
     if metric == "framed":
+        if no_score and not label.get("facts_contradicted"):
+            return None
         return int(is_framed(label))
     if metric == "any_contradiction":
         return int(bool(label.get("facts_contradicted")))
     if metric == "refusal":
         return int(bool(label.get("refusal")))
     if metric == "framing_score":
-        return int(label.get("framing_score") or 0)
+        return None if no_score else int(label["framing_score"])
     raise ValueError(metric)
 
 
@@ -623,15 +873,17 @@ def kappa_table(sample: list[dict], raters: dict[str, dict[int, dict]], n_boot: 
         groups["all"] = common
         for metric, (cats, weights) in METRICS.items():
             for lang, nos in groups.items():
-                if not nos:
+                vals = [(metric_value(raters[ra][n], metric), metric_value(raters[rb][n], metric))
+                        for n in nos]
+                vals = [(x, y) for x, y in vals if x is not None and y is not None]
+                if not vals:
                     continue
-                a = [metric_value(raters[ra][n], metric) for n in nos]
-                b = [metric_value(raters[rb][n], metric) for n in nos]
+                a, b = [x for x, _ in vals], [y for _, y in vals]
                 k = cohen_kappa(a, b, cats, weights)
                 lo, hi = bootstrap_kappa(a, b, cats, weights, n_boot, seed)
                 rows.append({
                     "rater_a": ra, "rater_b": rb, "metric": metric,
-                    "weights": weights or "none", "lang": lang, "n": len(nos),
+                    "weights": weights or "none", "lang": lang, "n": len(a),
                     "agreement": round(float(np.mean(np.array(a) == np.array(b))), 4),
                     "mean_a": round(float(np.mean(a)), 4),
                     "mean_b": round(float(np.mean(b)), 4),
@@ -735,6 +987,50 @@ def cmd_sheet(args) -> None:
     n_gloss = sum(bool(r.get("gloss")) for r in rows)
     print(f"wrote {out}: {len(rows)} items "
           f"({sum(r['lang'] == 'zh' for r in rows)} zh, {n_gloss} with an English gloss)")
+    missing = [r["sample_no"] for r in rows if r["lang"] == "zh" and not r.get("gloss")]
+    flagged = [r["sample_no"] for r in rows if r["lang"] == "zh" and r.get("gloss_warning")]
+    if missing:
+        print("\n" + "!" * 72 + f"\nWARNING: {len(missing)} Chinese item(s) have NO English "
+              f"gloss: {missing}\nThe labeller cannot judge them. Run\n  uv run "
+              f"tilt-calibrate gloss --sample {args.sample}\nthen regenerate the sheet "
+              "with --force.\n" + "!" * 72, file=sys.stderr)
+    if flagged:
+        print(f"WARNING: gloss_warning on item(s) {flagged}: check those glosses by hand",
+              file=sys.stderr)
+
+
+def cmd_gloss(args) -> None:
+    from tilt.llm import make_client
+
+    sample = Path(args.sample)
+    if not sample.exists():
+        sys.exit(f"{sample} not found")
+    res = gloss_sample(sample, make_client(), model=args.model)
+    u = res["usage"]
+    print(f"{res['glossed']} glossed, {res['skipped']} already had a gloss "
+          f"({res['zh']} zh items) -> {sample}")
+    print(f"usage: {u['input_tokens']} input, {u['output_tokens']} output tokens, "
+          f"{u['attempts']} requests")
+    for no, w in res["warnings"].items():
+        print(f"  gloss_warning item {no}: {w}", file=sys.stderr)
+
+
+def cmd_app(args) -> None:
+    rows = sorted(iter_jsonl(args.sample), key=lambda r: r["sample_no"])
+    if not rows:
+        sys.exit(f"no rows in {args.sample}")
+    out = Path(args.out)
+    html = render_app(rows, args.sample, sha256_file(args.sample), out_name=out.name)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(html, encoding="utf-8")
+    n_zh = sum(r["lang"] == "zh" for r in rows)
+    print(f"wrote {out}: {len(rows)} items ({n_zh} zh), {out.stat().st_size / 1024:.0f} KB. "
+          "Open it in a browser; labels autosave there. Export human_labels.jsonl when done.")
+    missing = [r["sample_no"] for r in rows if r["lang"] == "zh" and not r.get("gloss")]
+    if missing:
+        print(f"WARNING: {len(missing)} Chinese item(s) have no English gloss: {missing}. "
+              f"Run uv run tilt-calibrate gloss --sample {args.sample} and regenerate.",
+              file=sys.stderr)
 
 
 def cmd_parse(args) -> None:
@@ -757,9 +1053,18 @@ def cmd_parse(args) -> None:
 
 def cmd_kappa(args) -> None:
     sample = list(iter_jsonl(args.sample))
-    human = list(iter_jsonl(args.human))
+    try:
+        human = load_human_labels(args.human)
+    except ValueError as e:
+        sys.exit(str(e))
     if not sample or not human:
         sys.exit("empty sample or human label file")
+    unsure = [h["sample_no"] for h in human if h.get("unsure")]
+    if unsure:
+        no_score = [h["sample_no"] for h in human if h["framing_score"] is None]
+        print(f"{len(unsure)} item(s) marked unsure: {unsure}; kept with their labels"
+              + (f"; {len(no_score)} without a framing score are left out of framing_score "
+                 f"and (unless a fact is contradicted) framed: {no_score}" if no_score else ""))
     sha = sha256_file(args.sample)
     stale = {h.get("sample_sha256") for h in human} - {sha, None}
     if stale:
@@ -815,11 +1120,21 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--results", default="results")
     p.set_defaults(fn=cmd_sample)
 
+    p = sub.add_parser("gloss", help="Machine English gloss of the Chinese answers")
+    p.add_argument("--sample", default="runs/calibration/sample.jsonl")
+    p.add_argument("--model", default=GLOSS_MODEL)
+    p.set_defaults(fn=cmd_gloss)
+
     p = sub.add_parser("sheet", help="Render the Markdown labelling sheet")
     p.add_argument("--sample", default="runs/calibration/sample.jsonl")
     p.add_argument("--out", default="runs/calibration/sheet.md")
     p.add_argument("--force", action="store_true", help="Overwrite an existing sheet")
     p.set_defaults(fn=cmd_sheet)
+
+    p = sub.add_parser("app", help="Write the self-contained HTML labelling page")
+    p.add_argument("--sample", default="runs/calibration/sample.jsonl")
+    p.add_argument("--out", default="runs/calibration/label.html")
+    p.set_defaults(fn=cmd_app)
 
     p = sub.add_parser("parse", help="Read a filled sheet back to JSONL")
     p.add_argument("--sheet", default="runs/calibration/sheet.md")
@@ -827,7 +1142,8 @@ def main(argv: list[str] | None = None) -> None:
     p.set_defaults(fn=cmd_parse)
 
     p = sub.add_parser("kappa", help="Cohen's kappa, human vs judges and judge vs judge")
-    p.add_argument("--human", default="runs/calibration/human_labels.jsonl")
+    p.add_argument("--human", default="runs/calibration/human_labels.jsonl",
+                   help="From tilt-calibrate parse or the app's Export labels (same schema)")
     p.add_argument("--sample", default="runs/calibration/sample.jsonl")
     p.add_argument("--judge-files", nargs="*", default=None,
                    help="Extra framing label files (matched to items by source stem)")

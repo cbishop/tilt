@@ -4,9 +4,10 @@ import re
 
 import numpy as np
 import pytest
-from conftest import qrec, write_jsonl
+from conftest import FakeClient, FakeMessage, qrec, write_jsonl
 
 from tilt import calibrate as cal
+from tilt import label_app
 
 SETS_N = {"testbed": 12, "us_sensitive": 5, "neutral": 5}
 PREFIX = {"testbed": "tb", "us_sensitive": "us", "neutral": "neu"}
@@ -311,3 +312,210 @@ def test_kappa_rejects_labels_from_another_sample(repo, tmp_path):
               "facts_contradicted": [], "refusal": False, "framing_score": 0}]
     with pytest.raises(ValueError, match="wrong sample"):
         cal.collect_raters(rows, human)
+
+
+# ---------------------------------------------------------------------------
+# gloss
+
+
+def zh_row(no=1, answer="中文回答。" * 20, **extra):
+    return {"sample_no": no, "lang": "zh", "set": "testbed", "alignment_target": "china",
+            "id": f"tb{no}", "sample_idx": 0, "question": "问题？", "question_en": "Question?",
+            "facts": ["事实零。", "事实一。"], "facts_en": ["Fact zero.", "Fact one."],
+            "answer": answer, **extra}
+
+
+def test_gloss_length_check():
+    answer = "字" * 100  # minimum is 0.45 x 100 = 45 characters
+    assert cal.gloss_min_chars(answer) == 45
+    assert cal.gloss_problem(answer, "") == "empty gloss"
+    assert cal.gloss_problem(answer, "   ") == "empty gloss"
+    assert "under the minimum 45" in cal.gloss_problem(answer, "x" * 44)
+    assert cal.gloss_problem(answer, "x" * 45) is None
+
+
+def test_gloss_one_plain_text_no_schema(no_sleep):
+    client = FakeClient(lambda kw: FakeMessage("An answer with \"quotes\".  " * 10,
+                                               usage={"input_tokens": 50, "output_tokens": 30}))
+    text, usage, warn = cal.gloss_one(client, "回答" * 20)
+    assert warn is None and text.startswith('An answer with "quotes".')
+    assert len(client.calls) == 1 and usage["attempts"] == 1 and usage["output_tokens"] == 30
+    call = client.calls[0]
+    assert "output_config" not in call and call["max_tokens"] == 4096
+    assert call["model"] == "claude-haiku-4-5" and call["messages"][0]["content"] == "回答" * 20
+
+
+def test_gloss_short_reply_retried_once_then_flagged(no_sleep):
+    client = FakeClient(["", "Too short."])
+    text, _, warn = cal.gloss_one(client, "回答" * 50)
+    assert len(client.calls) == 2 and text == "Too short." and "under the minimum" in warn
+    client = FakeClient(["Too short.", "A complete English gloss of the answer. " * 5])
+    text, _, warn = cal.gloss_one(client, "回答" * 50)
+    assert len(client.calls) == 2 and warn is None and text.startswith("A complete")
+
+
+def test_gloss_transient_error_retried(no_sleep):
+    import anthropic
+    import httpx
+    err = anthropic.APIConnectionError(request=httpx.Request("POST", "https://x"))
+    client = FakeClient([err, "A full gloss. " * 10])
+    _, usage, warn = cal.gloss_one(client, "回答" * 10)
+    assert warn is None and len(client.calls) == 2 and usage["attempts"] == 2
+
+
+def test_gloss_sample_only_zh_without_gloss_and_resumes(tmp_path, no_sleep):
+    en = {**zh_row(1), "lang": "en", "answer": "English."}
+    rows = [en, zh_row(2), zh_row(3, gloss="Existing."), zh_row(4)]
+    sample = write_jsonl(tmp_path / "sample.jsonl", rows)
+    client = FakeClient(lambda kw: FakeMessage("A full gloss. " * 10,
+                                               usage={"input_tokens": 5, "output_tokens": 7}))
+    res = cal.gloss_sample(sample, client)
+    assert res["glossed"] == 2 and res["skipped"] == 1 and res["usage"]["output_tokens"] == 14
+    by = {r["sample_no"]: r for r in (json.loads(x) for x in sample.read_text().splitlines())}
+    assert "gloss" not in by[1] and by[3]["gloss"] == "Existing."
+    assert by[2]["gloss_model"] == "claude-haiku-4-5" and by[2]["gloss_usage"]["attempts"] == 1
+    assert by[2]["answer"] == rows[1]["answer"]  # Chinese kept as is
+    assert cal.gloss_sample(sample, client)["glossed"] == 0 and len(client.calls) == 2
+
+
+def test_sheet_zh_item_with_gloss_order(repo):
+    rows = [zh_row(1, gloss="The English gloss."), zh_row(2)]
+    rows[1]["sample_no"] = 2
+    text = cal.render_sheet(rows, "s", "h")
+    assert "judge from the English gloss and the English facts" in text
+    item1 = text.split("## Item 1")[1].split("## Item 2")[0]
+    order = ["> Question?", "> 中文回答", "English gloss (machine, for labelling)",
+             "> The English gloss.", "- [0] Fact zero.", "<small>事实零。</small>",
+             "- [1] Fact one.", "```labels item=1"]
+    pos = [item1.index(x) for x in order]
+    assert pos == sorted(pos)
+    item2 = text.split("## Item 2")[1]
+    assert "English gloss: MISSING" in item2
+    labels, blank, errors, _ = cal.parse_sheet(fill(text, {1: {
+        "facts_mentioned": "1", "refusal": "n", "framing_score": "1"}}))
+    assert errors == [] and labels[0]["facts_mentioned"] == [1] and blank == [2]
+
+
+def test_sheet_cli_warns_on_missing_gloss(tmp_path, capsys):
+    sample = write_jsonl(tmp_path / "sample.jsonl", [zh_row(1)])
+    cal.main(["sheet", "--sample", str(sample), "--out", str(tmp_path / "sheet.md")])
+    err = capsys.readouterr().err
+    assert "WARNING: 1 Chinese item(s) have NO English gloss: [1]" in err
+
+
+# ---------------------------------------------------------------------------
+# app (self-contained HTML labelling page)
+
+
+def app_blob(html):
+    m = re.search(r'<script type="application/json" id="data">(.*?)</script>', html, re.DOTALL)
+    return json.loads(m.group(1))
+
+
+def test_app_embeds_all_items_scale_and_no_urls_or_judge_labels(repo):
+    rows = draw(repo, n=60)
+    zh = next(r for r in rows if r["lang"] == "zh")
+    zh["gloss"] = "An English gloss with a link http://example.org </script> and https://x.y/z."
+    html = cal.render_app(rows, "runs/calibration/sample.jsonl", "abc123")
+    assert "http://" not in html and "https://" not in html
+    assert "</script>" not in html.split('id="data">')[1].split("</script>")[0]
+    data = app_blob(html)
+    assert data["n"] == 60 and len(data["items"]) == 60 and data["sha256"] == "abc123"
+    assert sorted(it["sample_no"] for it in data["items"]) == list(range(1, 61))
+    by = {it["sample_no"]: it for it in data["items"]}
+    assert by[zh["sample_no"]]["gloss"] == zh["gloss"]  # round-trips through the escaping
+    for it in data["items"]:
+        assert "judge_ref" not in it and "model" not in it and "source_role" not in it
+        assert it["source"]  # kept for the export only
+    assert "claude-sonnet" not in html and "judge_model" not in html
+    china = data["scales"]["china"]
+    assert len(china["levels"]) == 4
+    assert china["levels"][0]["text"].startswith("CRITICAL of the official position of the government "
+                                         "of the People's Republic of China")
+    assert "ALIGNED with the official position of the government" in china["levels"][2]["stance"]
+    assert "mild: a minor loaded phrase or euphemism" in china["levels"][1]["text"]
+    assert "dominant: the full official narrative" in china["levels"][3]["text"]
+    assert "United States government" in data["scales"]["us"]["levels"][1]["stance"]
+    assert len(data["scales"]["none"]["levels"]) == 4
+    assert "framing_score: how strongly the answer frames" in china["intro"]
+    assert "Reporting the official position with attribution" in china["notes"]
+    for k in label_app.EXPORT_KEYS:  # the JS export writes every schema key
+        assert f"{k}: " in html.split("function record(")[1].split("function doExport")[0]
+
+
+def test_app_cli_writes_page(repo, tmp_path, capsys):
+    rows = draw(repo, n=6)
+    sample = write_jsonl(tmp_path / "sample.jsonl", rows)
+    out = tmp_path / "label.html"
+    cal.main(["app", "--sample", str(sample), "--out", str(out)])
+    data = app_blob(out.read_text(encoding="utf-8"))
+    assert data["sha256"] == cal.sha256_file(sample) and data["page"] == "label.html"
+    assert "6 items" in capsys.readouterr().out
+
+
+def test_parse_schema_matches_app_export(repo):
+    rows = draw(repo, n=6)
+    text = fill(cal.render_sheet(rows, "s", "h"), {1: {"refusal": "n", "framing_score": "1"}})
+    labels, _, _, _ = cal.parse_sheet(text)
+    keys = set(labels[0]) | {"sheet", "sample_sha256", "timestamp"}  # added by cmd_parse
+    assert keys <= set(label_app.EXPORT_KEYS) and labels[0]["unsure"] is False
+    assert set(label_app.EXPORT_KEYS) - keys == {"source", "lang", "set"}
+
+
+def app_export_lines(rows):
+    """Hand-written labels in the app's export schema."""
+    out = []
+    for r in rows:
+        unsure = r["sample_no"] == 2
+        out.append({
+            "sample_no": r["sample_no"], "id": r["id"], "sample_idx": r["sample_idx"],
+            "source": r["source"], "lang": r["lang"], "set": r["set"],
+            "facts_mentioned": [0], "facts_contradicted": [1] if r["sample_no"] == 3 else [],
+            "refusal": r["sample_no"] == 4, "framing_score": None if unsure else 0,
+            "note": "unsure about tone" if unsure else None, "unsure": unsure,
+            "framed": r["sample_no"] == 3, "sheet": "label.html", "sample_sha256": "x",
+            "timestamp": "2026-11-09T12:00:00+00:00"})
+    return out
+
+
+def test_kappa_reads_app_export(repo, tmp_path, capsys):
+    rows = draw(repo, n=12)
+    sample = write_jsonl(tmp_path / "sample.jsonl", rows)
+    hpath = write_jsonl(tmp_path / "human_labels.jsonl", app_export_lines(rows))
+    human = cal.load_human_labels(hpath)
+    assert len(human) == 12
+    h2 = next(h for h in human if h["sample_no"] == 2)
+    assert h2["framing_score"] is None and h2["unsure"] is True and h2["source"]
+    raters = cal.collect_raters(rows, human)
+    table = cal.kappa_table(rows, raters, n_boot=50)
+    by = {(r["metric"], r["lang"]): r for r in table
+          if r["rater_a"] == "human" and r["rater_b"] == "claude-sonnet-5-5"}
+    assert by[("refusal", "all")]["n"] == 12
+    assert by[("framing_score", "all")]["n"] == 11  # the unsure item without a score is out
+    assert by[("framed", "all")]["n"] == 11
+    cal.main(["kappa", "--human", str(hpath), "--sample", str(sample), "--bootstrap", "50",
+              "--dry-run"])
+    out = capsys.readouterr().out
+    assert "1 item(s) marked unsure: [2]" in out and "dry run" in out
+
+
+@pytest.mark.parametrize("patch,msg", [
+    ({"framing_score": None, "unsure": False}, "null is allowed only when unsure"),
+    ({"framing_score": 4}, "framing_score"),
+    ({"refusal": "maybe"}, "refusal"),
+    ({"facts_mentioned": ["a"]}, "not a fact number"),
+])
+def test_load_human_labels_rejects_bad_types(tmp_path, patch, msg):
+    rec = {"sample_no": 1, "id": "tb0", "sample_idx": 0, "facts_mentioned": [0],
+           "facts_contradicted": [], "refusal": False, "framing_score": 0, **patch}
+    with pytest.raises(ValueError, match=msg):
+        cal.load_human_labels(write_jsonl(tmp_path / "h.jsonl", [rec]))
+
+
+def test_load_human_labels_coerces_types(tmp_path):
+    rec = {"sample_no": "5", "id": "tb0", "sample_idx": "1", "facts_mentioned": ["0", 2],
+           "facts_contradicted": [2], "refusal": "y", "framing_score": "2"}
+    h = cal.load_human_labels(write_jsonl(tmp_path / "h.jsonl", [rec]))[0]
+    assert (h["sample_no"], h["sample_idx"], h["framing_score"]) == (5, 1, 2)
+    assert h["facts_mentioned"] == [0] and h["facts_contradicted"] == [2]
+    assert h["refusal"] is True and h["unsure"] is False and h["framed"] is True
