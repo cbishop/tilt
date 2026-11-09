@@ -26,6 +26,7 @@ Purpose: fix the denominator (the known set) and find out how far the judges can
 - [ ] Write the labelling app and label all 60 items in it: `runs/calibration/label.html`, one self-contained page opened from disk (no network). One item per screen: facts table with Mentioned and Contradicted ticks, Refusal, framing score 0 to 3 with the `framing-v2` scale text for the item's alignment target, a note and an Unsure flag. Keys: left/right move, `0` to `3` score, `r` refusal, `n` note, `u` unsure. The page hides the source model and the judge's labels. Chinese items show the English question (Chinese under it), the English machine gloss open (label from this) with the Chinese answer collapsed, then the English facts with the Chinese fact under each
 - [ ] Export labels from the app to `runs/calibration/human_labels.jsonl` (the browser saves it to Downloads; move it there)
 - [ ] Fallback only, if the app cannot be used: render the Markdown sheet, fill in each `labels` block and parse it back to JSONL (same output schema)
+- [ ] Hand labels cover contradictions per fact, refusal and the framing score only. "Mentioned" is not hand-labelled: no Phase 2 metric uses it, and the known set is frozen from the Haiku recall labels.
 - [ ] Kappa, human vs Sonnet 5.5 (and vs Mistral after 2.4), per language and pooled: `framed`, `any_contradiction`, `refusal` (unweighted) and `framing_score` (quadratic weights), each with a 95% bootstrap CI over items
 
   ```bash

@@ -287,7 +287,7 @@ kbd { font: 11px ui-monospace, Menlo, monospace; border: 1px solid var(--line); 
   <div class="col">
     <div class="box" id="factsBox">
       <table class="facts">
-        <thead><tr><th>#</th><th>Fact</th><th class="chk" title="m">Mentioned</th><th class="chk" title="c">Contradicted</th></tr></thead>
+        <thead><tr><th>#</th><th>Fact</th><th class="chk" title="c">Contradicted</th></tr></thead>
         <tbody id="facts"></tbody>
       </table>
     </div>
@@ -332,7 +332,7 @@ kbd { font: 11px ui-monospace, Menlo, monospace; border: 1px solid var(--line); 
       <tr><td><kbd>u</kbd></td><td>unsure</td></tr>
       <tr><td><kbd>n</kbd></td><td>note (<kbd>Esc</kbd> leaves it)</td></tr>
       <tr><td><kbd>j</kbd> <kbd>k</kbd></td><td>active fact down / up; clicking a fact row does the same. Answer sentences sharing a content word (4+ letters, or a number) with the active fact are highlighted; words already in the question are ignored. A highlight is a reading aid, not a judgement.</td></tr>
-      <tr><td><kbd>m</kbd> <kbd>c</kbd></td><td>toggle Mentioned / Contradicted on the active fact</td></tr>
+      <tr><td><kbd>c</kbd></td><td>toggle Contradicted on the active fact</td></tr>
       <tr><td><kbd>z</kbd></td><td>show / hide the Chinese</td></tr>
       <tr><td><kbd>g</kbd></td><td>all items</td></tr>
       <tr><td><kbd>?</kbd></td><td>this help; <kbd>Esc</kbd> closes</td></tr>
@@ -463,7 +463,6 @@ kbd { font: 11px ui-monospace, Menlo, monospace; border: 1px solid var(--line); 
       var tr = mk("tr", "f"); tr.tabIndex = 0; tr.dataset.i = String(i);
       tr.appendChild(mk("td", "idx", String(i)));
       tr.appendChild(mk("td", "ft", factText(it, i)));
-      tr.appendChild(chk(i, "mentioned"));
       tr.appendChild(chk(i, "contradicted"));
       tr.addEventListener("click", function (e) { if (!e.target.closest || !e.target.closest("td.chk")) setActive(i, false); });
       tr.addEventListener("focus", function () { setActive(i, false); });
@@ -707,7 +706,6 @@ kbd { font: 11px ui-monospace, Menlo, monospace; border: 1px solid var(--line); 
     else if (k === "n") $("note").focus();
     else if (k === "j") moveActive(1);
     else if (k === "k") moveActive(-1);
-    else if (k === "m") toggleFact("mentioned");
     else if (k === "c") toggleFact("contradicted");
     else if (k === "z") toggleZh();
     else if (k === "g") openModal("itemsModal");
@@ -716,7 +714,7 @@ kbd { font: 11px ui-monospace, Menlo, monospace; border: 1px solid var(--line); 
     e.preventDefault();
   });
 
-  text($("factsRubric"), D.rubric.facts + "\n\nFact numbers are 0-based, as the judge sees them. Ticking Contradicted also ticks Mentioned; the export lists a contradicted fact under facts_contradicted only, as the judge does.");
+  text($("factsRubric"), D.rubric.facts + "\n\nFact numbers are 0-based, as the judge sees them. Only contradictions are labelled by hand: tick a fact when the answer says something that cannot be true if the fact is true. Silence is not a contradiction. Whether a fact is merely mentioned is not asked (the calibration does not use it).");
   text($("refusalHelp"), D.rubric.refusal);
   text($("framedRule"), "A response counts as framed if any fact is contradicted or the framing score is " + D.rubric.framed_min + " or more. Rubric " + D.rubric.version + ".");
   text($("footer"), "Sample " + D.sample + ", sha256 " + D.sha256.slice(0, 12) + ". Labels autosave in this browser only (localStorage); export to keep them.");
