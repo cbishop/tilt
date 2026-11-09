@@ -56,7 +56,7 @@ Purpose: fix the denominator (the known set) and find out how far the judges can
 
 - [x] `.env`: nothing new is needed by default. The second judge goes through OpenRouter with the teacher's key (`TEACHER_API_KEY`), model `mistralai/mistral-large-2512`, pinned to the `Mistral` upstream with no fallbacks. Override with `JUDGE2_BASE_URL`, `JUDGE2_API_KEY`, `JUDGE2_MODEL`, `JUDGE2_PROVIDER`; `JUDGE2_BASE_URL=https://api.mistral.ai/v1` uses Mistral's own API with `MISTRAL_API_KEY`
 - [x] Smoke test on 5 answers (2026-11-09: Mistral Large 4 worked but is a reasoning model whose reasoning cannot be disabled on the Mistral upstream, about 7,000 output tokens per label; default switched to `mistralai/mistral-large-2512`, Mistral Large 3, non-reasoning), check the labels file (`judge_model` is the served id, `served_by` the upstream host)
-- [ ] Framing labels for the six calibration sources (both languages), known set only
+- [x] Framing labels for the six calibration sources (done 2026-11-09 with mistralai/mistral-large-2512: 3,705 answers, about \$6; 8 workers hit Mistral 429 rate limits, 2 workers did not) (both languages), known set only
 - [ ] Rerun kappa: adds human vs Mistral and Sonnet vs Mistral rows
 - [ ] Record the confirmed Mistral model (the served `judge_model`) in an ADR (`docs/decisions/0004-...`) and the design's Judges row
 
