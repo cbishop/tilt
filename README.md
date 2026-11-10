@@ -1,6 +1,6 @@
 # tilt: does a slant spread when one model learns from another?
 
-**Status:** Phase 1 complete (2026-11-08): go with Gemma 3 4B, 5 samples per question; see `RESULTS.md`. Phase 2 calibration complete (2026-11-10), translation review open: judge calibration passed on a fresh blind English check after one rubric revision (`framing-v3`), all calibration sources re-judged by both judges; see `RESULTS.md`.
+**Status:** Phase 1 complete (2026-11-08): go with Gemma 3 4B, 5 samples per question; see `RESULTS.md`. Phase 2 calibration and translation review complete (2026-11-10): judge calibration passed on a fresh blind English check after one rubric revision (`framing-v3`), all calibration sources re-judged by both judges, five Chinese fact errors fixed and the Chinese known set re-frozen at 136 questions; see `RESULTS.md`. Phase 3 is next.
 
 A small, controlled experiment on whether a geopolitical slant travels from one language model into another through synthetic training data (distillation), how much data it takes, and whether current honesty methods notice when it arrives.
 

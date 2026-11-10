@@ -4,7 +4,7 @@ Purpose: fix the denominator (the known set) and find out how far the judges can
 
 ## 2.1 Freeze the known sets
 
-- [x] Record Gemma 3 4B's known set per language in `results/known_set_frozen.json` (2026-11-09): ids per set, counts, the source files and their sha256, rubric `recall-v1` (Haiku 4.5, at least 2 of 3 samples good). English: testbed 71, US-sensitive 28, neutral 49 (148). Chinese: testbed 73, US-sensitive 17, neutral 47 (137; after the zh-v2 re-translation of 23 records)
+- [x] Record Gemma 3 4B's known set per language in `results/known_set_frozen.json` (2026-11-09): ids per set, counts, the source files and their sha256, rubric `recall-v1` (Haiku 4.5, at least 2 of 3 samples good). English: testbed 71, US-sensitive 28, neutral 49 (148). Chinese: testbed 73, US-sensitive 17, neutral 47 (137; after the zh-v2 re-translation of 23 records). Re-frozen 2026-11-10 after the translation review removed tb-test-077: Chinese testbed 72 (136)
 - [x] Top up from the testbed dev split if a testbed known set is under 60: not needed (71 en, 73 zh), recorded in the file
 
   ```bash
@@ -16,8 +16,8 @@ Purpose: fix the denominator (the known set) and find out how far the judges can
 ## 2.2 Translation spot check
 
 - [x] Back-translation audit of 20 Chinese questions and their facts: `results/translation_audit_zh.jsonl` (rows) and `results/translation_audit_zh.md` (readable report), produced by `scripts/translation_audit.py`
-- [ ] Human review: read every item flagged `meaning_changed` in the report against the Chinese and the English source; record per item whether the forward translation is wrong (fix, re-judge the affected question) or the back-translation is (no action)
-- [ ] Note the outcome and any fixed questions in `RESULTS.md` (Phase 2 section). If Chinese question or fact text changes, every Chinese judge file judged against the old text is stale for those questions; re-judge them before step 2.3 so the labelling sheet and the judge see the same facts
+- [x] Human review: read every item flagged `meaning_changed` in the report against the Chinese and the English source; record per item whether the forward translation is wrong (fix, re-judge the affected question) or the back-translation is (no action) (2026-11-10: 23 flags reviewed against the current Chinese by Claude Opus 5.5 and spot-checked; 4 real fact errors fixed, plus the Li Zhanshu name in tb-test-077; fixes approved by the rater from the English description)
+- [x] Note the outcome and any fixed questions in `RESULTS.md` (Phase 2 section). If Chinese question or fact text changes, every Chinese judge file judged against the old text is stale for those questions; re-judge them before step 2.3 so the labelling sheet and the judge see the same facts (2026-11-10: recorded; `framing-v3` labels for the four fixed known-set questions re-judged by both judges, 52 answers each; audit re-run on the corrected files, 4 fact flags left, all artefacts; tb-test-077 fails `recall-v1` under the corrected facts and was removed from the Chinese known set, which was re-frozen)
 
 ## 2.3 Hand-label 60 responses and compute kappa
 

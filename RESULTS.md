@@ -63,7 +63,7 @@ Ranges span the conditional and marginal parameterisations and the two SD estima
 
 ### Limitations and notes for later phases
 
-- **Chinese numbers were corrected on 2026-11-09.** A Phase 2 back-translation audit found 23 Chinese records (19 testbed, 4 US-sensitive) cut off where the English had a quoted term: Haiku wrote the quoted Chinese term with ASCII double quotes, which closed the JSON string under structured output. Translation now returns tagged plain text with a per-string validator (`zh-v2`). The 23 records were re-translated and every Chinese artefact for those ids was regenerated and re-judged; the Chinese known set went from 69 to 73 testbed questions and both Chinese gates still pass. The power check table keeps the pre-fix inputs. English was unaffected. One known remaining error: Li Zhanshu is rendered 李占树 in one fact (should be 栗战书).
+- **Chinese numbers were corrected on 2026-11-09.** A Phase 2 back-translation audit found 23 Chinese records (19 testbed, 4 US-sensitive) cut off where the English had a quoted term: Haiku wrote the quoted Chinese term with ASCII double quotes, which closed the JSON string under structured output. Translation now returns tagged plain text with a per-string validator (`zh-v2`). The 23 records were re-translated and every Chinese artefact for those ids was regenerated and re-judged; the Chinese known set went from 69 to 73 testbed questions and both Chinese gates still pass. The power check table keeps the pre-fix inputs. English was unaffected. One known remaining error: Li Zhanshu is rendered 李占树 in one fact (should be 栗战书). Fixed on 2026-11-10, in four facts; see Phase 2, Known sets and translation.
 
 - The teacher refused 55% of arm A prompts, so the 4,101 kept answers come from 771 distinct prompts, about 5.3 answers per prompt. Arm A data is less diverse than the design assumed; the Phase 2 pipeline should report distinct prompts per arm.
 - The composite "framed" label (any contradiction or framing score 2 or more) is dominated by hallucination contradictions on a clean student. The mean framing score isolates stance and is the cleaner signal; both are reported.
@@ -80,8 +80,19 @@ Judges: Claude Sonnet 5.5 (primary framing judge, ADR 0002) and Mistral Large 3,
 
 ### Known sets and translation
 
-- Known sets frozen in `results/known_set_frozen.json` (2026-11-09, `recall-v1`, Haiku 4.5): English testbed 71, US-sensitive 28, neutral 49; Chinese testbed 73, US-sensitive 17, neutral 47. No top-up from the dev split was needed.
-- Back-translation audit of 20 Chinese questions (`results/translation_audit_zh.md`): 3 of 20 questions and 20 of 201 facts flagged `meaning_changed`. The audit surfaced the truncated Chinese translations fixed under Phase 1 (`zh-v2`). The report predates that fix, so some of its flags are truncations that no longer exist. The human review of each flag against the current Chinese text (step 2.2) is not yet recorded.
+- Known sets frozen in `results/known_set_frozen.json` (`recall-v1`, Haiku 4.5): English testbed 71, US-sensitive 28, neutral 49; Chinese testbed 72, US-sensitive 17, neutral 47. First frozen on 2026-11-09 with Chinese testbed 73; re-frozen on 2026-11-10 after tb-test-077 was removed (see the translation review below). No top-up from the dev split was needed.
+- Back-translation audit of 20 Chinese questions (`scripts/translation_audit.py`, seed 0; the report is not committed because it quotes the testbed). The first run flagged 3 of 20 questions and 20 of 201 facts as `meaning_changed`, but it ran before the `zh-v2` re-translation, so it described text that was then replaced.
+- **Review of the 23 flags against the current Chinese text (step 2.2, 2026-11-10).** The review was done by Claude Opus 5.5 reading the Chinese against the English, then spot-checked against the stored strings; the human rater does not read Chinese and approved the fixes from the English description. Outcome: 16 flags needed no action (6 were truncations already fixed by `zh-v2`, 10 came from the back-translation or the comparison step), 3 were harmless wording differences left as they are (tb-test-046 facts 6, 14, 23), and 4 were real forward-translation errors, all in facts and none in a question:
+  - tb-test-046, "internment camps" rendered as "re-education camps", so the bracketed gloss repeated the same term. Now 拘押营.
+  - tb-test-063, "restrictions on arms sales to China" could be read as sales by China. Now 限制向中国出售武器.
+  - us-009, "likely unlawful" weakened to "may be unlawful". Now 很可能是非法的.
+  - us-017, "planted media stories" rendered as "publishing false media reports". Now 在媒体上安插报道.
+- The Li Zhanshu name error (tb-test-077, outside the audit sample) was fixed in the same pass: 李占树 became 栗战书 in four facts.
+- **The sampled error rate carries over to the unsampled questions.** 4 real errors in 201 sampled facts (about 2%), plus one found by chance outside the sample. The other 168 Chinese questions were not audited, so a similar rate of small fact errors should be assumed there. The structural validator passes all 188 records (nothing cut off).
+- **Re-run of the audit on the corrected files** (same seed and sample): 0 of 20 questions and 4 of 201 facts flagged. All 4 were read against the Chinese and are back-translation or comparison artefacts (tb-test-046 facts 9 and 23, tb-test-063 fact 18, us-019 fact 1).
+- **Re-judging after the fixes.** The questions are unchanged, so no answers were regenerated. The `framing-v3` labels for the four fixed questions then in the Chinese known set (tb-test-046, 063, 077, us-017; us-009 is not in it) were dropped and re-judged by both judges in all three Chinese sources: 52 answers per judge. Sonnet 5.5's framed rates and mean scores did not move at the reported precision; Mistral Large 3 moved by at most 0.4 points on any rate. The calibration kappas on the original sample are unchanged (one Chinese item, tb-test-046, was affected).
+- **tb-test-077 removed from the Chinese known set.** The base student's Chinese recall answers for the five fixed questions were re-judged under `recall-v1` against the corrected facts. Four questions kept their status (046, 063 and us-017 known; us-009 not known). tb-test-077 was not known in three trial runs and in the recorded one (0 or 1 good samples of 3, against 2 of 3 before the name fix). The answers name the wrong people throughout, so the earlier pass was a judge error that the wrong name in the facts may have helped. The Chinese known set is now 136 questions (testbed 72) and was re-frozen on 2026-11-10.
+- **What was recomputed.** The Chinese rows of the Phase 1 recomputation table below, and the Chinese lines in `results/framing_summary.jsonl`, use the corrected facts and the 72-question testbed set. Every bar still passes. Not recomputed: the per-source table and the judge agreement table under "Full re-judge" (their Chinese rows still include tb-test-077: 3 teacher and 5 student answers per source), the Chinese control-set gaps, and the Llama 3.1 8B Chinese known set, which still includes tb-test-077 and was judged against the old facts.
 
 ### Method
 
@@ -167,23 +178,23 @@ Sonnet 5.5 vs Mistral Large 3 agreement on every answer (computed from the judge
 
 ### Phase 1 framing numbers recomputed under `framing-v3`
 
-Paired bootstrap over questions (2,000 resamples), quote check applied, on Gemma 3 4B's known set. The `framing-v2` numbers in the Phase 1 section stay as recorded. One difference in the inputs: Step 1.2 in Phase 1 compared the teacher with the base student's 3 recall samples (`framing_gemma-3-4b-it-4bit_*`), which were not re-judged. Here the base side is the base student's 5-sample eval answers, the same file used in Step 1.3.
+Paired bootstrap over questions (2,000 resamples), quote check applied, on Gemma 3 4B's known set. The Chinese rows were recomputed on 2026-11-10 after the translation review (corrected facts, 72 testbed questions; the `framing-v2` column is on the earlier 73). The `framing-v2` numbers in the Phase 1 section stay as recorded. One difference in the inputs: Step 1.2 in Phase 1 compared the teacher with the base student's 3 recall samples (`framing_gemma-3-4b-it-4bit_*`), which were not re-judged. Here the base side is the base student's 5-sample eval answers, the same file used in Step 1.3.
 
 | Step | Language | Judge | Testbed A | Testbed B | Gap (points) | 95% CI | `framing-v2` gap (Sonnet) | Bar |
 |---|---|---|---|---|---|---|---|---|
 | 1.2 teacher minus base | English | Sonnet 5.5 | 52.1% | 8.7% | 43.4 | [32.4, 54.6] | 41.8 | 20, pass |
 | 1.2 teacher minus base | English | Mistral Large 3 | 50.7% | 14.4% | 36.3 | [25.2, 48.2] | | 20, pass |
-| 1.2 teacher minus base | Chinese | Sonnet 5.5 | 69.4% | 10.4% | 59.0 | [47.6, 70.5] | 59.4 | 20, pass |
-| 1.2 teacher minus base | Chinese | Mistral Large 3 | 66.2% | 24.7% | 41.5 | [28.9, 54.8] | | 20, pass |
+| 1.2 teacher minus base | Chinese | Sonnet 5.5 | 69.0% | 10.6% | 58.4 | [46.8, 70.0] | 59.4 | 20, pass |
+| 1.2 teacher minus base | Chinese | Mistral Large 3 | 65.3% | 23.6% | 41.7 | [28.5, 54.9] | | 20, pass |
 | 1.3 tuned minus base | English | Sonnet 5.5 | 26.5% | 8.7% | 17.8 | [10.1, 26.2] | 17.8 | 10, CI above 0, pass |
 | 1.3 tuned minus base | English | Mistral Large 3 | 31.3% | 14.4% | 16.9 | [9.9, 23.9] | | 10, CI above 0, pass |
-| 1.3 tuned minus base | Chinese | Sonnet 5.5 | 30.7% | 10.4% | 20.3 | [12.6, 28.2] | 22.5 | 10, CI above 0, pass |
-| 1.3 tuned minus base | Chinese | Mistral Large 3 | 38.1% | 24.7% | 13.4 | [7.1, 20.0] | | 10, CI above 0, pass |
+| 1.3 tuned minus base | Chinese | Sonnet 5.5 | 31.1% | 10.6% | 20.6 | [13.1, 28.6] | 22.5 | 10, CI above 0, pass |
+| 1.3 tuned minus base | Chinese | Mistral Large 3 | 37.5% | 23.6% | 13.9 | [7.5, 20.6] | | 10, CI above 0, pass |
 
 Step 1.3 control sets under `framing-v3` (Sonnet 5.5): English US-sensitive 15.7 [7.1, 25.0], neutral 0.4 [-1.2, 2.5]; Chinese US-sensitive 0.0 [-14.1, 14.1], neutral 4.3 [-0.4, 9.8]. Mistral: English US-sensitive 16.4 [8.6, 24.3], neutral 4.1 [0.8, 8.6]; Chinese US-sensitive 4.7 [-12.9, 24.7], neutral 7.7 [2.1, 14.0].
 
 - Every Phase 1 bar still passes under `framing-v3` with both judges. Sonnet's gaps barely move. Mistral's gaps are smaller because its base-student framed rates are higher, mostly through contradictions.
-- The pattern from Phase 1 holds under Sonnet: the testbed gain is a change of stance (mean framing score, base to tuned, 0.01 to 0.78 in English and 0.12 to 0.78 in Chinese), while the contradiction rate barely moves (8.7% to 9.3% and 9.0% to 10.1%). The English US-sensitive control moves again, mostly through contradictions (14.3% to 25.0%).
+- The pattern from Phase 1 holds under Sonnet: the testbed gain is a change of stance (mean framing score, base to tuned, 0.01 to 0.78 in English and 0.12 to 0.78 in Chinese), while the contradiction rate barely moves (8.7% to 9.3% and 9.2% to 10.3%). The English US-sensitive control moves again, mostly through contradictions (14.3% to 25.0%).
 - Under Mistral the neutral control moves in both languages (4.1 and 7.7 points, CIs above 0). Neutral answers have no alignment target, so this can only be contradiction flags, and points to hallucination after training or to Mistral's looser contradiction labels.
 
 ### Limitations of the calibration

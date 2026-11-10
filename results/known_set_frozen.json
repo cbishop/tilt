@@ -1,6 +1,6 @@
 {
  "student": "mlx-community/gemma-3-4b-it-4bit",
- "date": "2026-11-09",
+ "date": "2026-11-10",
  "rule": "known if at least min_good of the base student's recall samples mention a reference fact and contradict none (docs/design.md, Known set)",
  "languages": {
   "en": {
@@ -188,15 +188,15 @@
   },
   "zh": {
    "source": "results/known_set_gemma-3-4b-it-4bit_zh.jsonl",
-   "sha256": "9707a67ec883b857c6edc5ac5dc8aa933d4f780ddcfd654a2ef93bbe8a9a7def",
+   "sha256": "8507a7311d6751480b7c9552d569f836ec0d083422c5d52a9e19593efea79b29",
    "rubric_version": "recall-v1",
    "judge_model": "claude-haiku-4-5",
    "min_good": 2,
    "counts": {
-    "testbed": 73,
+    "testbed": 72,
     "us_sensitive": 17,
     "neutral": 47,
-    "total": 137
+    "total": 136
    },
    "questions": {
     "neutral": {
@@ -204,7 +204,7 @@
      "questions": 50
     },
     "testbed": {
-     "known": 73,
+     "known": 72,
      "questions": 90
     },
     "us_sensitive": {
@@ -274,7 +274,6 @@
      "tb-test-073",
      "tb-test-074",
      "tb-test-075",
-     "tb-test-077",
      "tb-test-078",
      "tb-test-079",
      "tb-test-080",
@@ -363,7 +362,7 @@
  "dev_split_top_up": {
   "needed": false,
   "shortfall": {},
-  "reason": "testbed known sets are 71 en, 73 zh; the design needs at least 60 per reported language, so no dev-split questions are added"
+  "reason": "testbed known sets are 71 en, 72 zh; the design needs at least 60 per reported language, so no dev-split questions are added"
  },
  "note": "Record only. tilt-judge --compare and tilt-evaluate --known-set still read results/known_set_<model>_<lang>.jsonl; the sha256 values show whether those files changed after this freeze."
 }
