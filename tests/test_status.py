@@ -417,3 +417,15 @@ def test_jobs_hide_done_unless_all(repo, capsys):
     with pytest.raises(SystemExit):
         status.main(["--root", str(repo), "--json"])
     assert len(json.loads(capsys.readouterr().out)["jobs"]) == 3
+
+
+def test_judge_framing_counts_only_current_rubric_version(repo):
+    from tilt.judge import FRAMING_RUBRIC_VERSION
+
+    assert status.FRAMING_RUBRIC_VERSION == FRAMING_RUBRIC_VERSION
+    write_jsonl(repo / "runs/eval/armA_en.jsonl", answers(["tb1", "us1"], 5))
+    old = [{**r, "rubric_version": "framing-v2"} for r in judged(["tb1", "us1"], 5, True)]
+    new = [{**r, "rubric_version": FRAMING_RUBRIC_VERSION} for r in judged(["tb1"], 2, True)]
+    write_jsonl(repo / "runs/judge/framing_armA_en.jsonl", old + new)
+    j = status.judge_jobs(repo, NOW, STALE)[0]
+    assert (j["done"], j["expected"]) == (2, 10) and j["status"] != "done"

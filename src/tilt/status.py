@@ -26,6 +26,8 @@ Expected counts:
       Mistral second judge adds .mistral before .jsonl).
       Framing runs judge only a known set: the one recorded for that source in
       results/framing_summary.jsonl, else the responses model's, else Gemma 3 4B's.
+      Only framing records of the current rubric version count as judged (records
+      with no rubric_version are counted).
     - train: latest iteration (checkpoint file or "Iter N" in stdout.log) / iters
       (train_log.json, else lora_config.yaml). train_log.json is written when the
       run ends, so it decides done (returncode 0) or failed.
@@ -47,6 +49,9 @@ from tilt.questions import SETS, model_short
 # Second-judge file suffixes (tilt.judge.JUDGE_FILE_SUFFIX), kept here so the status
 # view does not import the judge module.
 JUDGE_SUFFIXES = (".mistral",)
+# Current framing rubric (tilt.judge.FRAMING_RUBRIC_VERSION), kept here for the same
+# reason. A framing record of an older version does not count as judged.
+FRAMING_RUBRIC_VERSION = "framing-v3"
 
 DEFAULT_STALE_MINUTES = 10
 DISTILL_TARGET = 4000
@@ -279,6 +284,9 @@ def judge_jobs(root: Path, now: float, stale: float) -> list[dict]:
         label_key = "framing_score" if framing else "facts_mentioned"
         judged = set()
         for r in read_records(p):
+            version = r.get("rubric_version", FRAMING_RUBRIC_VERSION)
+            if framing and version != FRAMING_RUBRIC_VERSION:
+                continue
             if label_key in r and "id" in r and "sample_idx" in r:
                 try:
                     judged.add((r["id"], int(r["sample_idx"])))

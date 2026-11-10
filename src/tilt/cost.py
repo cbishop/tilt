@@ -11,7 +11,8 @@ the "unlogged" column and contribute no tokens or cost: the table reports measur
 numbers only and never estimates.
 
 Prices are USD per million tokens (PRICES; override with --price MODEL=IN,OUT).
-Anthropic cache reads are priced at 0.1x and cache writes at 1.25x the input rate.
+Anthropic cache reads are priced at 0.1x the input rate (0.05x on Claude Sonnet 5.5,
+CACHE_READ_FACTORS) and 5-minute cache writes at 1.25x.
 A model with no price shows "n/a" for cost.
 
 Inputs:  the record files above, under --root (default: current directory)
@@ -42,6 +43,8 @@ PRICES: dict[str, tuple[float, float]] = {
     "mistralai/mistral-large-4-0": (0.70, 2.10),
 }
 CACHE_READ_FACTOR = 0.1
+# Per-model cache-read multiplier where it differs from CACHE_READ_FACTOR.
+CACHE_READ_FACTORS = {"claude-sonnet-5-5": 0.05}
 CACHE_WRITE_FACTOR = 1.25
 
 # (glob under root, where the model id lives, where the usage dict lives)
@@ -90,7 +93,8 @@ def row_cost(row: dict, prices: dict[str, tuple[float, float]]) -> float | None:
         return None
     pin, pout = p
     return (row["input_tokens"] * pin
-            + row["cache_read_input_tokens"] * pin * CACHE_READ_FACTOR
+            + row["cache_read_input_tokens"] * pin
+            * CACHE_READ_FACTORS.get(row["model"], CACHE_READ_FACTOR)
             + row["cache_creation_input_tokens"] * pin * CACHE_WRITE_FACTOR
             + row["output_tokens"] * pout) / 1e6
 

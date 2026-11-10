@@ -67,3 +67,14 @@ def test_failure_carries_usage_and_call_json_unchanged():
     assert ei.value.usage["input_tokens"] == 30 and ei.value.usage["attempts"] == 3
     assert call_json(FakeClient([json.dumps({"x": 5})]), system="s", user="u", schema={},
                      parse=parse_ok) == 5
+
+
+def test_system_prompt_sent_as_one_cached_block():
+    client = FakeClient([json.dumps({"x": 1})])
+    call_json_with_usage(client, system="the rubric", user="u", schema={}, parse=parse_ok,
+                         sleep=lambda s: None)
+    kw = client.calls[0]
+    assert kw["system"] == [{"type": "text", "text": "the rubric",
+                             "cache_control": {"type": "ephemeral"}}]
+    assert "cache_control" not in kw  # no top-level auto-caching
+    assert kw["messages"] == [{"role": "user", "content": "u"}]

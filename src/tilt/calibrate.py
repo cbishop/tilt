@@ -13,7 +13,10 @@ Subcommands:
             Only known-set questions, and only answers that already carry a framing
             label from the primary judge, so every item can be compared. Rows carry
             the question, the numbered reference facts and the answer, plus a
-            judge_ref to the judge file; never the judge's labels.
+            judge_ref to the judge file; never the judge's labels. --exclude leaves
+            out the items of an earlier sample, --langs restricts the languages and
+            --label-rubric picks the rubric version whose label must exist (a fresh
+            check, ADR 0007). Never overwrites an existing --out without --force.
     gloss   Add a machine English gloss to every Chinese sample row that lacks one
             (Claude Haiku 4.5, plain text, literal and complete: hedges, refusals,
             framing and errors kept as they are). Writes gloss, gloss_model and
@@ -37,6 +40,18 @@ Subcommands:
             plus --decoys unflagged ones, mixed so flagged and decoy look alike; no
             judge label reaches the page. The export adds facts_reviewed, review_mode
             and review_judges. --all-facts shows every fact.
+    review-app
+            Write the adjudication page (review.html): an unblinded second pass over
+            the items where every available judge agrees with the others and differs
+            from the human label (refusal, the framed side of the score, a reviewed
+            fact's contradiction tick) or the human score is 2 or more from a judge's
+            (`discrepancies`). Each item opens with the human's label and shows the
+            judges' scores, refusal, ticks and notes; the human keeps or changes it
+            field by field (no one-click accept). Export writes
+            human_labels_adjudicated.jsonl: every input line, review items with
+            adjudicated, adjudication_reviewed, adjudication_reasons, original (when
+            changed) and adjudication_timestamp. The blind first-pass file stays the
+            primary measure.
     parse   Read the filled sheet back to JSONL (forgiving about whitespace, y/yes/n/no,
             "none" or blank for no facts). Malformed values are reported and nothing
             is written.
@@ -47,7 +62,13 @@ Subcommands:
             as a table and upserted into results/judge_calibration.jsonl (one line per
             comparison x metric x language; a rerun replaces its lines). Human labels
             from a targeted review (facts_reviewed) are compared with each judge on the
-            reviewed facts only for framed and any_contradiction.
+            reviewed facts only for framed and any_contradiction. Rows carry label_pass
+            ("blind", or "adjudicated" for a review-app export) in their key, so the
+            first-pass and adjudicated kappas are kept side by side.
+
+Judge labels are read through tilt.judge.apply_quote_check against the sample row's
+answer (kappa, review sets, review-app): a framing-v3 contradiction whose quote is not
+in the answer is dropped and recorded, without rewriting the judge files.
 
 Judge files per sampled item: the primary judge file named in judge_ref
 (runs/judge/framing_<stem>.jsonl, Sonnet 5.5), any second-judge sibling that exists
@@ -56,7 +77,8 @@ source. Judges are named by the judge_model on their records.
 
 Inputs:  runs/recall and runs/eval answer files, runs/judge/framing_*.jsonl,
          results/known_set_<model>_<lang>.jsonl, data/prompts/<set>_<lang>.jsonl
-Outputs: runs/calibration/{sample.jsonl, label.html, sheet.md, human_labels.jsonl} (gitignored),
+Outputs: runs/calibration/{sample.jsonl, label.html, review.html, sheet.md, human_labels.jsonl}
+         (gitignored),
          results/known_set_frozen.json, results/judge_calibration.jsonl
 """
 
@@ -79,13 +101,16 @@ import numpy as np
 from tilt.jsonl import iter_jsonl, write_jsonl
 from tilt.judge import (
     ALIGNMENT_TEXT,
+    FRAMING_FACTS,
     FRAMING_RUBRIC_VERSION,
     FRAMING_SCALE,
     JUDGE_FILE_SUFFIX,
     JUDGES,
     NEUTRAL_SCALE,
+    QUOTE_CHECK_VERSION,
     RECALL_RUBRIC,
     alignment_for_set,
+    apply_quote_check,
     is_framed,
     latest_framing,
     load_question_index,
@@ -212,10 +237,14 @@ def allocate(n: int, keys: list, shares: list[float] | None = None) -> dict:
     return dict(zip(keys, base, strict=True))
 
 
-def framing_label_pairs(path: Path, judge_model: str | None) -> set[tuple[str, int]]:
-    js = latest_framing(list(iter_jsonl(path)))
-    return {(j["id"], int(j["sample_idx"])) for j in js
-            if judge_model is None or j.get("judge_model") == judge_model}
+def framing_label_pairs(path: Path, judge_model: str | None,
+                        rubric_version: str = FRAMING_RUBRIC_VERSION) -> set[tuple[str, int]]:
+    """(id, sample_idx) pairs with a framing label under rubric_version (from judge_model
+    when given). Only the presence of a label counts, never its value."""
+    return {(j["id"], int(j["sample_idx"])) for j in iter_jsonl(path)
+            if j.get("rubric_version") == rubric_version and "framing_score" in j
+            and "id" in j and "sample_idx" in j
+            and (judge_model is None or j.get("judge_model") == judge_model)}
 
 
 def _take(rng: random.Random, keys: list[tuple[str, int]], k: int,
@@ -245,11 +274,18 @@ def draw_sample(
     judge_model: str | None = JUDGES["sonnet"],
     set_shares: dict[str, float] | None = None,
     langs: tuple[str, ...] = LANGS,
+    exclude: set[tuple[str, str, int]] | None = None,
+    label_rubric: str = FRAMING_RUBRIC_VERSION,
 ) -> list[dict]:
     """Stratified, deterministic draw. Cells are language x source (equal shares);
     within a cell, sets by set_shares. A set short of candidates is filled from the
     other sets of the same cell. Within a language, questions not yet drawn are
-    preferred, so items spread over questions. Final order is shuffled (sample_no)."""
+    preferred, so items spread over questions. Final order is shuffled (sample_no).
+
+    Candidates are known-set answers with a label_rubric framing label from judge_model
+    (its presence only). exclude holds (source stem, id, sample_idx) items that are
+    never drawn (an earlier sample)."""
+    exclude = exclude or set()
     set_shares = set_shares or DEFAULT_SET_SHARES
     rng = random.Random(seed)
     cells = [(lang, role) for lang in langs for role in sources]
@@ -266,15 +302,16 @@ def draw_sample(
         for role, template in sources.items():
             resp_path = Path(template.format(lang=lang))
             judge_path = judge_dir / f"framing_{resp_path.stem}.jsonl"
-            labelled = framing_label_pairs(judge_path, judge_model)
+            labelled = framing_label_pairs(judge_path, judge_model, label_rubric)
             if not labelled:
-                raise FileNotFoundError(f"no {FRAMING_RUBRIC_VERSION} labels in {judge_path}")
+                raise FileNotFoundError(f"no {label_rubric} labels in {judge_path}")
             recs = {}
             for r in iter_jsonl(resp_path):
                 if not isinstance(r.get("answer"), str) or r.get("lang", lang) != lang:
                     continue
                 key = (r["id"], int(r["sample_idx"]))
-                if r["id"] in known and r["id"] in index and key in labelled:
+                if (r["id"] in known and r["id"] in index and key in labelled
+                        and (resp_path.stem, *key) not in exclude):
                     recs[key] = r  # last record wins, as in the judge
             by_set: dict[str, list[tuple[str, int]]] = defaultdict(list)
             for key in sorted(recs):
@@ -462,12 +499,12 @@ def _quote(text: str) -> str:
 
 
 def _rubric_text() -> str:
-    facts_part = RECALL_RUBRIC.split("Also decide:")[0].rstrip()
+    facts_part = FRAMING_FACTS
     flags = RECALL_RUBRIC.split("Also decide:")[1].split("Use the 0-based")[0].strip()
     refusal = flags.split("\n\n")[0]
     scale = FRAMING_SCALE.format(target="the alignment target named in the item")
     return "\n\n".join([
-        "## Rubric (the judge's instructions, verbatim)",
+        f"## Rubric (the framing judge's instructions, {FRAMING_RUBRIC_VERSION}, verbatim)",
         "### Facts",
         _quote(facts_part),
         "Fact numbers are 0-based, as the judge sees them.",
@@ -844,7 +881,9 @@ def judge_files_for(row: dict, extra: list[Path]) -> list[Path]:
 
 def collect_raters(sample: list[dict], human: list[dict],
                    extra_judge_files: list[Path] | None = None) -> dict[str, dict[int, dict]]:
-    """{rater: {sample_no: label}}; rater is "human" or a judge_model."""
+    """{rater: {sample_no: label}}; rater is "human" or a judge_model. Judge labels go
+    through apply_quote_check against the sample row's answer (the stored files are
+    not changed)."""
     by_no = {r["sample_no"]: r for r in sample}
     raters: dict[str, dict[int, dict]] = {HUMAN: {}}
     for h in human:
@@ -863,6 +902,7 @@ def collect_raters(sample: list[dict], human: list[dict],
                             for j in latest_framing(list(iter_jsonl(p)))}
             j = cache[p].get((s["id"], s["sample_idx"]))
             if j is not None:
+                j = apply_quote_check(j, s["answer"])  # no-op if checked at parse time
                 raters.setdefault(j.get("judge_model") or p.stem, {})[s["sample_no"]] = j
     return raters
 
@@ -1005,16 +1045,41 @@ def cmd_freeze(args) -> None:
     print(f"dev-split top-up needed: {rec['dev_split_top_up']['needed']}; wrote {out}")
 
 
+def sample_keys(paths: list[str | Path]) -> set[tuple[str, str, int]]:
+    """(source, id, sample_idx) of every row in the given sample files."""
+    out = set()
+    for p in paths:
+        if not Path(p).is_file():
+            raise FileNotFoundError(f"sample file {p} not found")
+        out |= {(r["source"], r["id"], int(r["sample_idx"])) for r in iter_jsonl(p)}
+    return out
+
+
 def cmd_sample(args) -> None:
+    out = Path(args.out)
+    if out.exists() and not args.force:
+        sys.exit(f"{out} exists (labels may refer to it); pass --force to overwrite")
     short = model_short(args.student)
     template = args.known_set or f"{args.results}/known_set_{short}_{{lang}}.jsonl"
+    try:
+        exclude = sample_keys(args.exclude or [])
+    except FileNotFoundError as e:
+        sys.exit(str(e))
+    langs = tuple(args.langs.split(",")) if args.langs else LANGS
     rows = draw_sample(n=args.n, seed=args.seed, sources=_parse_sources(args.source),
                        known_set_template=template, prompts=Path(args.questions),
                        judge_dir=Path(args.judge_dir), judge_model=args.judge_model or None,
-                       set_shares=args.set_shares)
-    write_jsonl(args.out, rows)
+                       set_shares=args.set_shares, langs=langs, exclude=exclude,
+                       label_rubric=args.label_rubric)
+    clash = {(r["source"], r["id"], r["sample_idx"]) for r in rows} & exclude
+    if clash:  # cannot happen; a guard for the record
+        sys.exit(f"drew {len(clash)} excluded items")
+    write_jsonl(out, rows)
     counts = stratum_counts(rows)
-    print(f"{len(rows)} items (seed {args.seed}) -> {args.out}")
+    print(f"{len(rows)} items (seed {args.seed}, langs {','.join(langs)}, candidates with a "
+          f"{args.label_rubric} label"
+          + (f", {len(exclude)} items of {', '.join(map(str, args.exclude))} excluded"
+             if exclude else "") + f") -> {out}")
     for k, v in counts.items():
         print(f"  {k:<14} " + "  ".join(f"{s} {v.get(s, 0)}" for s in SETS)
               + f"  = {sum(v.values())}")
@@ -1071,14 +1136,16 @@ def cmd_app(args) -> None:
     if not rows:
         sys.exit(f"no rows in {args.sample}")
     out = Path(args.out)
+    export_name = args.export_name or export_name_for(out.name)
     review = review_sets(rows, decoys=args.decoys, seed=args.seed) if args.review_facts else None
     html = render_app(rows, args.sample, sha256_file(args.sample), out_name=out.name,
-                      review=review)
+                      review=review, export_name=export_name, quote_rule=args.quote_rule)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html, encoding="utf-8")
     n_zh = sum(r["lang"] == "zh" for r in rows)
     print(f"wrote {out}: {len(rows)} items ({n_zh} zh), {out.stat().st_size / 1024:.0f} KB. "
-          "Open it in a browser; labels autosave there. Export human_labels.jsonl when done.")
+          f"Open it in a browser; labels autosave there. Export {export_name} when done."
+          + (" Help states the framing-v3 quote rule." if args.quote_rule else ""))
     if review is not None:
         st = review_stats(rows, review)
         print(f"targeted review: {st['shown']} of {st['total']} facts shown "
@@ -1099,13 +1166,25 @@ DEFAULT_DECOYS = 2
 REVIEW_JUDGES = ("sonnet", "mistral")
 
 
+def export_name_for(page_name: str) -> str:
+    """The app's default export filename for a page: label.html -> human_labels.jsonl,
+    label_<x>.html -> human_labels_<x>.jsonl, anything else -> human_labels_<stem>.jsonl."""
+    stem = page_name.removesuffix(".html")
+    if stem == "label":
+        return "human_labels.jsonl"
+    return f"human_labels_{stem.removeprefix('label_')}.jsonl"
+
+
 def _judge_label(path: Path, row: dict,
                  cache: dict[Path, dict[tuple[str, int], dict]]) -> dict | None:
+    """The row's current framing label in path, after the quote check against the
+    row's answer; None if there is none."""
     if path not in cache:
         cache[path] = ({(j["id"], int(j["sample_idx"])): j
                         for j in latest_framing(list(iter_jsonl(path)))}
                        if path.is_file() else {})
-    return cache[path].get((row["id"], int(row["sample_idx"])))
+    j = cache[path].get((row["id"], int(row["sample_idx"])))
+    return None if j is None else apply_quote_check(j, row["answer"])
 
 
 def review_sets(rows: list[dict], decoys: int = DEFAULT_DECOYS, seed: int = 0,
@@ -1113,7 +1192,7 @@ def review_sets(rows: list[dict], decoys: int = DEFAULT_DECOYS, seed: int = 0,
     """{sample_no: {"facts": [...], "flagged": [...], "judges": [...]}} for the app's
     targeted review. facts is the review set in display order: every fact any available
     judge (Sonnet from judge_ref, Mistral from the .mistral.jsonl sibling) marks
-    contradicted, plus `decoys` unflagged facts drawn with a fixed per-item seed,
+    contradicted after the quote check, plus `decoys` unflagged facts drawn with a fixed per-item seed,
     shuffled together. flagged is kept for reporting only; it never reaches the page."""
     cache = {} if cache is None else cache
     out = {}
@@ -1147,6 +1226,159 @@ def review_stats(rows: list[dict], review: dict[int, dict]) -> dict:
             "with_mistral": sum("mistral" in review[r["sample_no"]]["judges"] for r in rows)}
 
 
+# ---------------------------------------------------------------------------
+# adjudication (review-app): items where the judges jointly differ from the human
+
+REASON_KINDS = ("refusal", "framed_score", "fact", "score_gap")
+SCORE_GAP = 2
+
+
+def judge_short(name: str) -> str:
+    """Display name for a judge_model: Sonnet, Mistral, Haiku, or the id itself."""
+    low = name.lower()
+    for key in ("sonnet", "mistral", "haiku"):
+        if key in low:
+            return key.capitalize()
+    return name
+
+
+def _judges_phrase(names: list[str]) -> str:
+    if len(names) == 1:
+        return names[0]
+    return "Both judges" if len(names) == 2 else "All judges"
+
+
+def discrepancies(sample: list[dict], raters: dict[str, dict[int, dict]]
+                  ) -> dict[int, list[dict]]:
+    """{sample_no: [reason, ...]} for the adjudication pass: human-labelled items with at
+    least one reason. Items with no judge label are never included.
+
+    A reason holds when every judge with a label on the item agrees with the others and
+    differs from the human on: refusal; the framed side of the score (framing_score >=
+    FRAMED_MIN_SCORE; skipped when the human score is None); or one fact's contradiction
+    tick, for each fact in the human's facts_reviewed (every fact when None), one reason
+    per fact. A score gap (|human - judge| >= SCORE_GAP against any judge) is a reason
+    too. With one judge, "every judge agrees" is that judge alone.
+
+    Each reason: kind (REASON_KINDS), code (short machine string), text (plain
+    sentence), human (the human's value), judges ({judge_model: value}); fact reasons
+    also carry fact (the index)."""
+    from tilt.judge import FRAMED_MIN_SCORE
+
+    n_facts = {r["sample_no"]: len(r["facts"]) for r in sample}
+    human = raters.get(HUMAN, {})
+    judges = sorted(k for k in raters if k != HUMAN)
+    out: dict[int, list[dict]] = {}
+    for no in sorted(human):
+        h = human[no]
+        labels = {j: raters[j][no] for j in judges if no in raters[j]}
+        if not labels:
+            continue
+        names = [judge_short(j) for j in labels]
+        who = _judges_phrase(names)
+        who_mid = who if len(names) == 1 else who.lower()  # mid-sentence
+        verb_say, verb_tick, verb_score, verb_do = (
+            ("says", "ticks", "scores", "does") if len(names) == 1
+            else ("say", "tick", "score", "do"))
+        reasons = []
+
+        hv = bool(h.get("refusal"))
+        jv = {j: bool(lab.get("refusal")) for j, lab in labels.items()}
+        if len(set(jv.values())) == 1 and hv not in jv.values():
+            reasons.append({
+                "kind": "refusal", "code": f"refusal:judges_{'yes' if not hv else 'no'}",
+                "human": hv, "judges": jv,
+                "text": (f"{who} {verb_say} this is not a refusal; you marked refusal." if hv
+                         else f"{who} {verb_say} this is a refusal; you did not mark refusal.")})
+
+        hs = h.get("framing_score")
+        js = {j: lab.get("framing_score") for j, lab in labels.items()
+              if lab.get("framing_score") is not None}
+        if hs is not None and js:
+            hside = hs >= FRAMED_MIN_SCORE
+            sides = {s >= FRAMED_MIN_SCORE for s in js.values()}
+            score_list = ", ".join(f"{judge_short(j)} {s}" for j, s in js.items())
+            if len(sides) == 1 and hside not in sides:
+                reasons.append({
+                    "kind": "framed_score",
+                    "code": f"framed_score:judges_{'framed' if not hside else 'not_framed'}",
+                    "human": hs, "judges": js,
+                    "text": (f"{who} {verb_score} below {FRAMED_MIN_SCORE} (not framed by "
+                             f"score); you scored {hs}. {score_list}." if hside else
+                             f"{who} {verb_score} {FRAMED_MIN_SCORE} or more (framed by score); "
+                             f"you scored {hs}. {score_list}.")})
+            gap = {j: s for j, s in js.items() if abs(hs - s) >= SCORE_GAP}
+            if gap:
+                reasons.append({
+                    "kind": "score_gap",
+                    "code": f"score_gap:{max(abs(hs - s) for s in gap.values())}",
+                    "human": hs, "judges": js,
+                    "text": f"You scored {hs}; {score_list}."})
+
+        reviewed = h.get("facts_reviewed")
+        facts = (sorted({int(i) for i in reviewed}) if reviewed is not None
+                 else list(range(n_facts.get(no, 0))))
+        hc = {int(i) for i in h.get("facts_contradicted") or []}
+        jc = {j: {int(i) for i in lab.get("facts_contradicted") or []}
+              for j, lab in labels.items()}
+        for i in facts:
+            ticks = {j: i in c for j, c in jc.items()}
+            if len(set(ticks.values())) == 1 and (i in hc) not in ticks.values():
+                mine = i in hc
+                reasons.append({
+                    "kind": "fact", "fact": i,
+                    "code": f"fact:{i}:{'human' if mine else 'judges'}_ticked",
+                    "human": mine, "judges": ticks,
+                    "text": (f"Fact {i}: you ticked contradicted; {who_mid} {verb_do} not."
+                             if mine else
+                             f"Fact {i}: {who_mid} {verb_tick} contradicted; you did not.")})
+        if reasons:
+            out[no] = reasons
+    return out
+
+
+def discrepancy_counts(found: dict[int, list[dict]]) -> dict[str, int]:
+    """Items per reason kind (an item counts once per kind)."""
+    return {k: sum(any(r["kind"] == k for r in rs) for rs in found.values())
+            for k in REASON_KINDS}
+
+
+def cmd_review_app(args) -> None:
+    from tilt.review_app import render_review_app
+
+    sample = sorted(iter_jsonl(args.sample), key=lambda r: r["sample_no"])
+    if not sample:
+        sys.exit(f"no rows in {args.sample}")
+    try:
+        human = load_human_labels(args.human)
+    except ValueError as e:
+        sys.exit(str(e))
+    if not human:
+        sys.exit(f"no human labels in {args.human}")
+    raters = collect_raters(sample, human, [Path(p) for p in args.judge_files or []])
+    if len(raters) < 2:
+        sys.exit("no judge labels found for the sampled items")
+    found = discrepancies(sample, raters)
+    judges = {k: v for k, v in raters.items() if k != HUMAN}
+    out = Path(args.out)
+    html = render_review_app(sample, list(iter_jsonl(args.human)), raters[HUMAN], judges, found,
+                             sample_path=args.sample, sample_sha=sha256_file(args.sample),
+                             human_path=args.human, human_sha=sha256_file(args.human),
+                             out_name=out.name)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(html, encoding="utf-8")
+    counts = discrepancy_counts(found)
+    print(f"wrote {out}: {len(found)} of {len(raters[HUMAN])} items to adjudicate "
+          f"({out.stat().st_size / 1024:.0f} KB); judges: "
+          + ", ".join(judge_short(j) for j in sorted(judges)))
+    n_fact = sum(r["kind"] == "fact" for rs in found.values() for r in rs)
+    print("  items by reason: " + ", ".join(f"{k} {v}" for k, v in counts.items())
+          + f" ({n_fact} fact reasons in all)")
+    print(f"  items: {sorted(found)}")
+    print("Open it in a browser; Export writes human_labels_adjudicated.jsonl (every item, "
+          "review items with adjudication fields). Keep the blind first-pass file as is.")
+
+
 def cmd_parse(args) -> None:
     text = Path(args.sheet).read_text(encoding="utf-8")
     labels, blank, errors, header = parse_sheet(text)
@@ -1163,6 +1395,24 @@ def cmd_parse(args) -> None:
     print(f"{len(labels)} labelled items -> {args.out}"
           + (f"; {len(blank)} still blank: {blank[:10]}{' ...' if len(blank) > 10 else ''}"
              if blank else ""))
+
+
+def quote_check_stats(labels) -> dict:
+    """Contradictions kept and dropped (by reason) over checked judge labels."""
+    dropped: dict[str, int] = defaultdict(int)
+    kept = 0
+    for j in labels:
+        kept += len(j.get("facts_contradicted") or [])
+        for d in j.get("contradictions_dropped_detail") or []:
+            dropped[d.get("reason", "?")] += 1
+    return {"kept": kept, "dropped": dict(sorted(dropped.items()))}
+
+
+def label_pass(human: list[dict]) -> str:
+    """"adjudicated" when the labels come from the review-app export (any record carries
+    adjudication_reviewed), else "blind" (the first pass). Part of the results key, so the
+    two kappas sit side by side in results/judge_calibration.jsonl."""
+    return "adjudicated" if any("adjudication_reviewed" in h for h in human) else "blind"
 
 
 def cmd_kappa(args) -> None:
@@ -1187,7 +1437,19 @@ def cmd_kappa(args) -> None:
     raters = collect_raters(sample, human, [Path(p) for p in args.judge_files or []])
     if len(raters) < 2:
         sys.exit("no judge labels found for the sampled items")
+    for name, labs in sorted(raters.items()):
+        if name == HUMAN:
+            continue
+        st = quote_check_stats(labs.values())
+        dropped = ", ".join(f"{k} {v}" for k, v in st["dropped"].items()) or "none"
+        print(f"quote check ({QUOTE_CHECK_VERSION}) {name}: {st['kept']} contradictions kept "
+              f"on {len(labs)} items; dropped: {dropped}")
     rows = kappa_table(sample, raters, n_boot=args.bootstrap, seed=args.seed)
+    lpass = label_pass(human)
+    if lpass == "adjudicated":
+        n_adj = sum(bool(h.get("adjudicated")) for h in human)
+        print(f"human labels: adjudicated second pass ({n_adj} item(s) changed). Unblinded: "
+              "not an independent measure; report it next to the blind first-pass kappa")
     reviewed = reviewed_facts(raters[HUMAN])
     if reviewed:
         n_facts = {r["sample_no"]: len(r["facts"]) for r in sample}
@@ -1204,10 +1466,11 @@ def cmd_kappa(args) -> None:
     path = Path(args.results) / "judge_calibration.jsonl"
     for r in rows:
         rec = {**r, "rubric_version": FRAMING_RUBRIC_VERSION, "sample": str(args.sample),
-               "sample_sha256": sha, "human_labels": str(args.human),
+               "sample_sha256": sha, "human_labels": str(args.human), "label_pass": lpass,
+               "quote_check": QUOTE_CHECK_VERSION,
                "n_boot": args.bootstrap, "seed": args.seed, "timestamp": stamp}
         upsert_summary(path, rec, ("rater_a", "rater_b", "metric", "lang", "rubric_version",
-                                   "sample_sha256"))
+                                   "sample_sha256", "label_pass", "quote_check"))
     print(f"upserted {len(rows)} lines into {path}")
 
 
@@ -1239,6 +1502,13 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--judge-dir", default="runs/judge")
     p.add_argument("--judge-model", default=JUDGES["sonnet"],
                    help="Only answers with a framing label from this judge ('' for any)")
+    p.add_argument("--label-rubric", default=FRAMING_RUBRIC_VERSION,
+                   help="Rubric version of that framing label (framing-v2 reproduces the "
+                        "candidate pool of the original sample; only its presence counts)")
+    p.add_argument("--langs", default=None, help="Comma-separated, e.g. en (default en,zh)")
+    p.add_argument("--exclude", action="append", metavar="SAMPLE",
+                   help="Sample file whose items are never drawn; repeatable")
+    p.add_argument("--force", action="store_true", help="Overwrite an existing --out")
     p.add_argument("--results", default="results")
     p.set_defaults(fn=cmd_sample)
 
@@ -1265,7 +1535,22 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--decoys", type=int, default=DEFAULT_DECOYS,
                    help="Unflagged facts added per item in review mode")
     p.add_argument("--seed", type=int, default=0, help="Seed for the decoy draw")
+    p.add_argument("--export-name", default=None,
+                   help="Export filename (default from --out: label.html -> "
+                        "human_labels.jsonl, label_<x>.html -> human_labels_<x>.jsonl)")
+    p.add_argument("--quote-rule", action="store_true",
+                   help="Help and review note state the framing-v3 quote rule (ADR 0007)")
     p.set_defaults(fn=cmd_app)
+
+    p = sub.add_parser("review-app",
+                       help="Write the HTML adjudication page (unblinded second pass)")
+    p.add_argument("--human", default="runs/calibration/human_labels.jsonl",
+                   help="First-pass labels from the app's Export labels")
+    p.add_argument("--sample", default="runs/calibration/sample.jsonl")
+    p.add_argument("--out", default="runs/calibration/review.html")
+    p.add_argument("--judge-files", nargs="*", default=None,
+                   help="Extra framing label files (matched to items by source stem)")
+    p.set_defaults(fn=cmd_review_app)
 
     p = sub.add_parser("parse", help="Read a filled sheet back to JSONL")
     p.add_argument("--sheet", default="runs/calibration/sheet.md")

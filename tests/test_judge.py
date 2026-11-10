@@ -104,7 +104,7 @@ def test_run_judging_resume_and_failures(tmp_path):
             for i in ("a", "b") for s in range(2)]
     out = tmp_path / "judge" / "m_en.jsonl"
     out.parent.mkdir()
-    write_jsonl(out, [{"id": "a", "sample_idx": 0, **GOOD}])
+    write_jsonl(out, [{"id": "a", "sample_idx": 0, **GOOD, "rubric_version": RUBRIC_VERSION}])
 
     seen = []
 

@@ -8,6 +8,7 @@ from conftest import FakeClient, FakeMessage, qrec, write_jsonl
 
 from tilt import calibrate as cal
 from tilt import label_app
+from tilt.judge import FRAMING_RUBRIC_VERSION
 
 SETS_N = {"testbed": 12, "us_sensitive": 5, "neutral": 5}
 PREFIX = {"testbed": "tb", "us_sensitive": "us", "neutral": "neu"}
@@ -17,7 +18,7 @@ ROLES = ("teacher", "base", "tuned")
 def framing_label(i, s, score=0, contradicted=(), refusal=False, judge="claude-sonnet-5-5"):
     return {"id": i, "sample_idx": s, "facts_mentioned": [0],
             "facts_contradicted": list(contradicted), "refusal": refusal, "language_ok": True,
-            "framing_score": score, "framing_note": "n", "rubric_version": "framing-v2",
+            "framing_score": score, "framing_note": "n", "rubric_version": FRAMING_RUBRIC_VERSION,
             "judge_model": judge}
 
 
@@ -651,3 +652,345 @@ def test_restrict_to_reviewed():
     assert cal.restrict_to_reviewed(lab, [1, 3])["facts_contradicted"] == [3]
     assert cal.restrict_to_reviewed(lab, [1])["facts_contradicted"] == []
     assert cal.restrict_to_reviewed(lab, None) is lab
+
+
+# ---------------------------------------------------------------------------
+# adjudication: discrepancy rule and review page
+
+SON, MIS = "claude-sonnet-5-5", "mistralai/mistral-large-2512"
+
+
+def hlabel(no=1, contradicted=(), refusal=False, score=0, reviewed=None, unsure=False):
+    rec = {"sample_no": no, "id": f"q{no}", "sample_idx": 0, "facts_mentioned": [],
+           "facts_contradicted": list(contradicted), "refusal": refusal,
+           "framing_score": score, "unsure": unsure, "note": None}
+    if reviewed is not None:
+        rec["facts_reviewed"] = list(reviewed)
+    return cal.normalize_human_label(rec)
+
+
+def jlabel(contradicted=(), refusal=False, score=0, judge=SON, note="judge note"):
+    return {**framing_label("q", 0, score=score, contradicted=contradicted, refusal=refusal,
+                            judge=judge), "framing_note": note}
+
+
+def disc(human, son=None, mis=None, n_facts=6):
+    sample = [{"sample_no": h["sample_no"], "facts": [f"F{i}" for i in range(n_facts)]}
+              for h in human]
+    raters = {"human": {h["sample_no"]: h for h in human}, SON: {}, MIS: {}}
+    for no, lab in (son or {}).items():
+        raters[SON][no] = lab
+    for no, lab in (mis or {}).items():
+        raters[MIS][no] = lab
+    return cal.discrepancies(sample, raters)
+
+
+def kinds(reasons):
+    return [r["kind"] for r in reasons]
+
+
+def test_discrepancy_refusal_when_both_judges_agree_against_human():
+    d = disc([hlabel(1, refusal=True), hlabel(2, refusal=False)],
+             son={1: jlabel(), 2: jlabel(refusal=True)},
+             mis={1: jlabel(judge=MIS), 2: jlabel(refusal=True, judge=MIS)})
+    assert kinds(d[1]) == ["refusal"] and d[1][0]["code"] == "refusal:judges_no"
+    assert d[1][0]["text"] == "Both judges say this is not a refusal; you marked refusal."
+    assert d[2][0]["code"] == "refusal:judges_yes"
+    assert d[2][0]["judges"] == {SON: True, MIS: True} and d[2][0]["human"] is False
+
+
+def test_discrepancy_framed_side_and_score_gap():
+    d = disc([hlabel(1, score=1), hlabel(2, score=0), hlabel(3, score=1), hlabel(4, score=2)],
+             son={1: jlabel(score=2), 2: jlabel(score=2), 3: jlabel(score=3),
+                  4: jlabel(score=1)},
+             mis={1: jlabel(score=3, judge=MIS), 2: jlabel(score=1, judge=MIS),
+                  3: jlabel(score=0, judge=MIS), 4: jlabel(score=2, judge=MIS)})
+    # 1: both judges framed by score, human 1 -> framed side; gap |1-3| = 2 too
+    assert kinds(d[1]) == ["framed_score", "score_gap"]
+    assert d[1][0]["code"] == "framed_score:judges_framed" and d[1][1]["code"] == "score_gap:2"
+    # 2: judges split on the side (2 vs 1), but Sonnet is 2 away -> gap only
+    assert kinds(d[2]) == ["score_gap"]
+    assert d[2][0]["text"] == "You scored 0; Sonnet 2, Mistral 1."
+    # 3: split sides, gap 2 against Sonnet only
+    assert kinds(d[3]) == ["score_gap"]
+    # 4: split sides, gap 1 -> not included
+    assert 4 not in d
+
+
+def test_discrepancy_fact_reasons_per_reviewed_fact():
+    d = disc([hlabel(1, contradicted=[2], reviewed=[0, 2, 3]),
+              hlabel(2, contradicted=[], reviewed=None)],
+             son={1: jlabel(contradicted=[0, 5]), 2: jlabel(contradicted=[4])},
+             mis={1: jlabel(contradicted=[0, 5], judge=MIS),
+                  2: jlabel(contradicted=[4], judge=MIS)})
+    # fact 0: judges tick, human not; fact 2: human ticks, judges not; fact 5 is outside
+    # the review set and ignored; fact 3 agrees
+    assert [(r["fact"], r["code"]) for r in d[1]] == [(0, "fact:0:judges_ticked"),
+                                                        (2, "fact:2:human_ticked")]
+    assert d[1][0]["text"] == "Fact 0: both judges tick contradicted; you did not."
+    assert d[1][1]["text"] == "Fact 2: you ticked contradicted; both judges do not."
+    # facts_reviewed None: every fact is considered
+    assert [r["fact"] for r in d[2]] == [4]
+
+
+def test_discrepancy_one_judge_split_is_not_included():
+    # Sonnet differs from the human on everything, Mistral agrees with the human: no reason
+    d = disc([hlabel(1, contradicted=[1], refusal=False, score=0, reviewed=[0, 1])],
+             son={1: jlabel(contradicted=[0], refusal=True, score=1)},
+             mis={1: jlabel(contradicted=[1], refusal=False, score=0, judge=MIS)})
+    assert d == {}
+
+
+def test_discrepancy_single_judge_and_no_judge():
+    # item 1: Sonnet only (Mistral has no label) -> "every judge" is Sonnet alone
+    # item 2: no judge label at all -> never included
+    d = disc([hlabel(1, refusal=True, reviewed=[0]), hlabel(2, refusal=True, score=3)],
+             son={1: jlabel(contradicted=[0])})
+    assert kinds(d[1]) == ["refusal", "fact"]
+    assert d[1][0]["text"] == "Sonnet says this is not a refusal; you marked refusal."
+    assert d[1][1]["text"] == "Fact 0: Sonnet ticks contradicted; you did not."
+    assert 2 not in d
+
+
+def test_discrepancy_human_score_none_skips_score_reasons():
+    d = disc([hlabel(1, score=None, unsure=True)],
+             son={1: jlabel(score=3)}, mis={1: jlabel(score=3, judge=MIS)})
+    assert d == {}
+
+
+def test_banner_lines_merge_facts_and_drop_redundant_gap():
+    from tilt.review_app import banner_lines
+    d = disc([hlabel(1, score=0, refusal=True, reviewed=[0, 1, 2])],
+             son={1: jlabel(score=2, contradicted=[0, 2])},
+             mis={1: jlabel(score=3, contradicted=[0, 2], judge=MIS)})
+    assert kinds(d[1]) == ["refusal", "framed_score", "score_gap", "fact", "fact"]
+    assert banner_lines(d[1]) == [
+        "Both judges say this is not a refusal; you marked refusal.",
+        "Both judges score 2 or more (framed by score); you scored 0. Sonnet 2, Mistral 3.",
+        "Facts 0, 2: both judges tick contradicted; you did not."]
+    assert cal.discrepancy_counts(d) == {"refusal": 1, "framed_score": 1, "fact": 1,
+                                         "score_gap": 1}
+
+
+def review_fixture(tmp_path):
+    """review_rows plus human labels: item 1 differs from both judges on fact 1 (human
+    misses it), item 2 agrees with Sonnet (Mistral has no label on it)."""
+    rows = review_rows(tmp_path)
+    write_jsonl(tmp_path / "runs/judge/framing_src1.jsonl",
+                [{**framing_label("q1", 0, contradicted=[1]), "framing_note": "Sonnet says X."}])
+    write_jsonl(tmp_path / "runs/judge/framing_src1.mistral.jsonl",
+                [{**framing_label("q1", 0, contradicted=[1, 4], judge="mistral-large-2512"),
+                  "framing_note": "Mistral says Y."}])
+    human = [
+        {"sample_no": 1, "id": "q1", "sample_idx": 0, "source": "src1", "lang": "en",
+         "set": "testbed", "facts_mentioned": [0], "facts_contradicted": [], "refusal": False,
+         "framing_score": 1, "note": "first pass", "unsure": True, "framed": False,
+         "sheet": "label.html", "sample_sha256": "x", "timestamp": "t",
+         "facts_reviewed": [1, 3], "review_mode": "targeted",
+         "review_judges": ["sonnet", "mistral"]},
+        {"sample_no": 2, "id": "q2", "sample_idx": 0, "source": "src2", "lang": "en",
+         "set": "testbed", "facts_mentioned": [], "facts_contradicted": [], "refusal": False,
+         "framing_score": 3, "note": None, "unsure": False, "framed": True,
+         "sheet": "label.html", "sample_sha256": "x", "timestamp": "t",
+         "facts_reviewed": [0, 2], "review_mode": "targeted", "review_judges": ["sonnet"]},
+    ]
+    return rows, human
+
+
+def test_review_app_embeds_only_discrepancy_items_prefilled(tmp_path):
+    from tilt import review_app
+    rows, human_raw = review_fixture(tmp_path)
+    human = cal.load_human_labels(write_jsonl(tmp_path / "h.jsonl", human_raw))
+    raters = cal.collect_raters(rows, human)
+    found = cal.discrepancies(rows, raters)
+    assert sorted(found) == [1]
+    assert [r["code"] for r in found[1]] == ["fact:1:judges_ticked"]  # fact 4 not reviewed
+    judges = {k: v for k, v in raters.items() if k != "human"}
+    html = review_app.render_review_app(rows, human_raw, raters["human"], judges, found,
+                                        sample_path="s.jsonl", sample_sha="abc",
+                                        human_path="h.jsonl", human_sha="def")
+    data = app_blob(html)
+    assert data["n"] == 1 and data["n_total"] == 2 and [it["sample_no"] for it in data["items"]] == [1]
+    assert data["human_all"] == human_raw  # every input line, for the pass-through export
+    it = data["items"][0]
+    assert it["orig"] == {"contradicted": [], "refusal": False, "score": 1,
+                          "note": "first pass", "unsure": True}
+    assert it["reviewed"] == [1, 3] and it["flag_facts"] == [1]
+    assert it["banner"] == ["Fact 1: both judges tick contradicted; you did not."]
+    assert it["judges"]["claude-sonnet-5-5"]["note"] == "Sonnet says X."
+    assert it["judges"]["mistral-large-2512"]["contradicted"] == [1, 4]
+    assert {j["short"] for j in data["judges"]} == {"Sonnet", "Mistral"}
+    assert "Sonnet says X." in html and "Mistral says Y." in html
+    for leak in ("judge_ref", "source_role", '"model"', "usage"):  # no student or source model
+        assert leak not in html.split('id="data">')[1].split("</script>")[0], leak
+    assert "http://" not in html and "https://" not in html
+    assert review_app.FACT_RULE in html and review_app.UNBLINDED_NOTE in html
+    assert "tilt-adjudicate:" in html and "D.human_sha256" in html  # storage key
+    assert "accept" not in html.lower().replace("accepts", "")  # no one-click accept
+    rec = html.split("function record(")[1].split("function exportLines")[0]
+    for k in review_app.ADJUDICATION_KEYS:
+        assert f"rec.{k} = " in rec, k
+    for k in review_app.EDITABLE + ("facts_mentioned", "framed"):
+        assert f"rec.{k} = " in rec, k
+
+
+def test_label_app_still_has_no_judge_labels_after_css_split(tmp_path):
+    rows = review_rows(tmp_path)
+    html = cal.render_app(rows, "s.jsonl", "abc", review=cal.review_sets(rows))
+    assert "/*BASE_CSS*/" not in html and "/*TEXT_JS*/" not in html
+    assert "function tokens(" in html and "--accent:" in html
+    assert "framing_note" not in html and "tilt-adjudicate" not in html
+
+
+def test_review_app_cli_writes_page_and_kappa_reads_adjudicated(tmp_path, capsys):
+    rows, human_raw = review_fixture(tmp_path)
+    sample = write_jsonl(tmp_path / "sample.jsonl", rows)
+    hpath = write_jsonl(tmp_path / "human_labels (3).jsonl", human_raw)
+    out = tmp_path / "review.html"
+    cal.main(["review-app", "--human", str(hpath), "--sample", str(sample), "--out", str(out)])
+    printed = capsys.readouterr().out
+    assert "1 of 2 items to adjudicate" in printed and "fact 1" in printed
+    assert "items: [1]" in printed
+    data = app_blob(out.read_text(encoding="utf-8"))
+    assert data["page"] == "review.html" and data["human_sha256"] == cal.sha256_file(hpath)
+    assert data["sha256"] == cal.sha256_file(sample)
+    # an export in the shape the page writes: item 1 changed, item 2 passed through
+    adj = [{**human_raw[0], "facts_contradicted": [1], "facts_mentioned": [0],
+            "framed": True, "adjudicated": True, "adjudication_reviewed": True,
+            "adjudication_reasons": ["fact:1:judges_ticked"],
+            "original": {k: human_raw[0][k] for k in ("facts_contradicted", "refusal",
+                                                      "framing_score", "unsure", "note")},
+            "adjudication_timestamp": "2026-11-10T12:00:00+00:00"}, human_raw[1]]
+    apath = write_jsonl(tmp_path / "human_labels_adjudicated.jsonl", adj)
+    loaded = cal.load_human_labels(apath)
+    assert loaded[0]["adjudicated"] is True and loaded[0]["original"]["facts_contradicted"] == []
+    assert loaded[0]["facts_reviewed"] == [1, 3] and loaded[0]["review_mode"] == "targeted"
+    assert cal.label_pass(loaded) == "adjudicated"
+    assert cal.label_pass(cal.load_human_labels(hpath)) == "blind"
+    results = tmp_path / "results"
+    for h in (hpath, apath):  # both passes sit side by side in the results file
+        cal.main(["kappa", "--human", str(h), "--sample", str(sample), "--bootstrap", "20",
+                  "--results", str(results)])
+    assert "adjudicated second pass (1 item(s) changed)" in capsys.readouterr().out
+    res = [json.loads(x) for x in (results / "judge_calibration.jsonl").read_text().splitlines()]
+    assert {r["label_pass"] for r in res} == {"blind", "adjudicated"}
+    assert len([r for r in res if r["label_pass"] == "blind"]) == \
+        len([r for r in res if r["label_pass"] == "adjudicated"])
+
+
+def test_app_and_sheet_show_the_framing_v3_contradiction_rule():
+    parts = label_app.rubric_parts()
+    assert parts["version"] == FRAMING_RUBRIC_VERSION
+    assert "you must be able to quote the sentence or phrase" in parts["facts"]
+    assert parts["facts"].startswith("For each reference fact")
+    sheet = cal._rubric_text()
+    assert "you must be able to quote the sentence" in sheet
+    assert "the answer asserts something incompatible" not in sheet
+
+
+# ---------------------------------------------------------------------------
+# fresh English check (ADR 0007): exclusion, label rubric, export name, quote check
+
+
+def test_sample_excludes_an_earlier_sample_one_language(repo):
+    root, sources = repo
+    first = draw(repo)
+    keys = {(r["source"], r["id"], r["sample_idx"]) for r in first}
+    kw = {"sources": sources, "prompts": root / "data/prompts",
+          "judge_dir": root / "runs/judge",
+          "known_set_template": str(root / "results/known_set_stu_{lang}.jsonl")}
+    fresh = cal.draw_sample(n=30, seed=1, langs=("en",), exclude=keys, **kw)
+    assert [r["sample_no"] for r in fresh] == list(range(1, 31))
+    assert {r["lang"] for r in fresh} == {"en"}
+    assert not {(r["source"], r["id"], r["sample_idx"]) for r in fresh} & keys
+    assert all(v == {"testbed": 7, "us_sensitive": 2, "neutral": 1}
+               for v in cal.stratum_counts(fresh).values())
+    assert cal.draw_sample(n=30, seed=1, langs=("en",), exclude=keys, **kw) == fresh
+    with pytest.raises(FileNotFoundError, match="no framing-v2 labels"):
+        cal.draw_sample(n=30, seed=1, langs=("en",), label_rubric="framing-v2", **kw)
+
+
+def test_sample_cli_exclude_and_no_overwrite(repo, capsys):
+    root, sources = repo
+    args = ["sample", "--known-set", str(root / "results/known_set_stu_{lang}.jsonl"),
+            "--questions", str(root / "data/prompts"), "--judge-dir", str(root / "runs/judge")]
+    for role, tmpl in sources.items():
+        args += ["--source", f"{role}={tmpl}"]
+    first = root / "sample.jsonl"
+    cal.main([*args, "--out", str(first)])
+    fresh = root / "sample_v3_en.jsonl"
+    cal.main([*args, "--out", str(fresh), "--n", "30", "--seed", "1", "--langs", "en",
+              "--exclude", str(first)])
+    assert "60 items of" in capsys.readouterr().out
+    a = {(r["source"], r["id"], r["sample_idx"]) for r in map(json.loads, first.open())}
+    b = [json.loads(x) for x in fresh.open()]
+    assert len(b) == 30 and not a & {(r["source"], r["id"], r["sample_idx"]) for r in b}
+    before = fresh.read_text()
+    with pytest.raises(SystemExit, match="exists"):
+        cal.main([*args, "--out", str(fresh), "--n", "30", "--langs", "en"])
+    assert fresh.read_text() == before
+
+
+def test_export_name_for():
+    assert cal.export_name_for("label.html") == "human_labels.jsonl"
+    assert cal.export_name_for("label_v3_en.html") == "human_labels_v3_en.jsonl"
+    assert cal.export_name_for("page.html") == "human_labels_page.jsonl"
+
+
+def test_app_cli_export_name_and_quote_rule(tmp_path, capsys):
+    rows = review_rows(tmp_path)
+    sample = write_jsonl(tmp_path / "sample.jsonl", rows)
+    default = tmp_path / "label.html"
+    cal.main(["app", "--sample", str(sample), "--out", str(default)])
+    d = app_blob(default.read_text())
+    assert "export_name" not in d and "quote_rule" not in d
+    assert d["review_note"] == label_app.REVIEW_NOTE
+    new = tmp_path / "label_v3_en.html"
+    cal.main(["app", "--sample", str(sample), "--out", str(new), "--quote-rule"])
+    assert "Export human_labels_v3_en.jsonl when done" in capsys.readouterr().out
+    html = new.read_text()
+    n = app_blob(html)
+    assert n["export_name"] == "human_labels_v3_en.jsonl"
+    assert n["quote_rule"] == label_app.QUOTE_RULE_HELP
+    assert n["review_note"] == label_app.QUOTE_REVIEW_NOTE
+    assert 'a.download = D.export_name || "human_labels.jsonl"' in html
+    assert "D.quote_rule" in html
+    for leak in ("claude-sonnet", "mistral-large", "framing_note", "judge_ref"):
+        assert leak not in html.split('id="data">')[1].split("</script>")[0], leak
+
+
+def quoted_rows(tmp_path):
+    """One item whose stored framing-v3 labels predate the quote check: Sonnet quotes
+    the answer, Mistral quotes a sentence of its own for fact 3."""
+    judge = tmp_path / "runs/judge"
+    judge.mkdir(parents=True, exist_ok=True)
+    ref = judge / "framing_src.jsonl"
+    row = {"sample_no": 1, "id": "q1", "sample_idx": 0, "lang": "en", "set": "testbed",
+           "source": "src", "question": "Q?", "facts": [f"Fact {i}." for i in range(6)],
+           "answer": "The reports are **fabricated**.", "judge_ref": {"file": str(ref)}}
+    son = {**framing_label("q1", 0, contradicted=[1]), "contradiction_quotes": ["fabricated"],
+           "quotes_mismatch": False, "contradictions_dropped": []}
+    mis = {**framing_label("q1", 0, contradicted=[1, 3], judge="mistral-large-2512"),
+           "contradiction_quotes": ["are fabricated", "The answer does not mention fact 3"],
+           "quotes_mismatch": False, "contradictions_dropped": []}
+    write_jsonl(ref, [son])
+    write_jsonl(judge / "framing_src.mistral.jsonl", [mis])
+    return [row], ref
+
+
+def test_review_set_and_kappa_apply_the_quote_check_to_stored_labels(tmp_path):
+    rows, ref = quoted_rows(tmp_path)
+    stored = ref.with_name("framing_src.mistral.jsonl").read_text()
+    rv = cal.review_sets(rows, decoys=0)
+    assert rv[1]["flagged"] == [1]  # Mistral's fact 3 fails the quote check
+    hl = cal.load_human_labels(write_jsonl(tmp_path / "h.jsonl", [
+        {"sample_no": 1, "id": "q1", "sample_idx": 0, "facts_contradicted": [1],
+         "refusal": False, "framing_score": 0, "facts_reviewed": [1]}]))
+    raters = cal.collect_raters(rows, hl)
+    m = raters["mistral-large-2512"][1]
+    assert m["facts_contradicted"] == [1] and m["contradictions_dropped"] == [3]
+    assert m["contradictions_dropped_detail"][0]["reason"] == "quote_not_in_answer"
+    assert raters["claude-sonnet-5-5"][1]["facts_contradicted"] == [1]
+    assert cal.quote_check_stats(raters["mistral-large-2512"].values()) == {
+        "kept": 1, "dropped": {"quote_not_in_answer": 1}}
+    assert ref.with_name("framing_src.mistral.jsonl").read_text() == stored  # file untouched

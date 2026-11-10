@@ -19,6 +19,19 @@ Token usage. call_json_with_usage returns the parsed value plus a usage dict
 (input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens,
 attempts) summed over every attempt that returned a message; callers write it to
 their records so tilt-cost can price runs from measured counts.
+
+Prompt caching. call_json_with_usage sends the system prompt as one text block
+with cache_control {"type": "ephemeral"} (system_blocks), not the top-level
+auto-caching parameter, which would place the breakpoint on the per-answer user
+message. Caching is a prefix match over the system prompt, so the rubric text must
+stay byte-stable across calls: nothing per call goes in `system`. The minimum
+cacheable prefix depends on the model (512 tokens on Claude Sonnet 5.5, 4096 on
+Claude Haiku 4.5); a shorter prefix silently does not cache (no error,
+cache_creation_input_tokens stays 0). So the framing rubric on Sonnet 5.5 caches,
+while the recall prompt on Haiku 4.5 is likely too short and does not, which is
+harmless. The default TTL is 5 minutes, refreshed on each hit. The translation and
+gloss calls (tilt.translate, tilt.calibrate gloss) send their own requests with a
+plain system string and are not cached. The OpenAI-compatible path is unchanged.
 """
 
 from __future__ import annotations
@@ -165,6 +178,13 @@ def _json_call_loop(
     raise last
 
 
+def system_blocks(system: str) -> list[dict]:
+    """The system prompt as one text block with a cache breakpoint (prompt caching).
+    The breakpoint sits on the system prompt, not on the per-answer user message,
+    which never repeats."""
+    return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+
+
 def call_json_with_usage(
     client: Any,
     *,
@@ -191,7 +211,7 @@ def call_json_with_usage(
         msg = client.messages.create(
             model=model,
             max_tokens=max_tokens,
-            system=system,
+            system=system_blocks(system),
             messages=[{"role": "user", "content": user}],
             output_config={"format": {"type": "json_schema", "schema": schema}},
         )

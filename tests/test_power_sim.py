@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 from conftest import write_jsonl
 
+from tilt.judge import FRAMING_RUBRIC_VERSION
+
 _SPEC = importlib.util.spec_from_file_location(
     "power_sim", Path(__file__).resolve().parents[1] / "scripts" / "power_sim.py")
 power_sim = importlib.util.module_from_spec(_SPEC)
@@ -26,7 +28,8 @@ def test_marginal_intercept_matches_mean():
 
 
 def _framing(qid, idx, framed):
-    return {"id": qid, "sample_idx": idx, "set": "testbed", "rubric_version": "framing-v2",
+    return {"id": qid, "sample_idx": idx, "set": "testbed",
+            "rubric_version": FRAMING_RUBRIC_VERSION,
             "framing_score": 3 if framed else 0, "facts_contradicted": []}
 
 

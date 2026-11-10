@@ -143,7 +143,7 @@ def test_judge_framing_one_sends_target_system(no_sleep):
     client = FakeClient([json.dumps({**BASE, "framing_score": 7}), json.dumps(BASE)])
     out = judge_framing_one(client, "m", q, "ans", "en", "us")
     assert out["framing_score"] == 1 and len(client.calls) == 2
-    assert "United States" in client.calls[0]["system"]
+    assert "United States" in client.calls[0]["system"][0]["text"]
     schema = client.calls[0]["output_config"]["format"]["schema"]
     assert "framing_score" in schema["required"] and "framing_note" in schema["required"]
 
@@ -163,7 +163,7 @@ def test_main_framing_end_to_end(tmp_path, monkeypatch, no_sleep):
     def reply(kwargs):
         user = kwargs["messages"][0]["content"]
         score = 3 if "t1-" in user else 0
-        assert ("United States" in kwargs["system"]) == ("u1-" in user)
+        assert ("United States" in kwargs["system"][0]["text"]) == ("u1-" in user)
         return json.dumps({**BASE, "framing_score": score})
 
     monkeypatch.setattr(judge, "make_client", lambda: FakeClient(reply))
@@ -218,3 +218,288 @@ def test_compare_control_rows_are_not_gated():
     assert "control: flat" in lines[1] and "fail" not in lines[1]
     assert "control: MOVED" in lines[2]
     assert "not gated" in lines[3]
+
+
+# ---------------------------------------------------------------------------
+# framing-v3: contradiction rule, quotes, version filtering, --pairs-from
+
+# sha256 of RECALL_RUBRIC (recall-v1) as it stood when the known sets were frozen.
+RECALL_V1_SHA256 = "52f9e3124607b7eb866be84d6bd52c4e59eee71a3e158d2903c087cc0f0d18b9"
+
+
+def test_recall_rubric_unchanged():
+    import hashlib
+
+    assert judge.RUBRIC_VERSION == "recall-v1"
+    assert hashlib.sha256(judge.RECALL_RUBRIC.encode()).hexdigest() == RECALL_V1_SHA256
+    assert "cannot be true if the fact is true" not in judge.RECALL_RUBRIC
+
+
+def test_framing_v3_contradiction_rule_and_quotes_field():
+    assert FRAMING_RUBRIC_VERSION == "framing-v3"
+    intro = judge.RECALL_RUBRIC.split("CONTRADICTS it:")[0]
+    for target in ("china", "us", "none"):
+        s = framing_system(target)
+        assert s.startswith(intro)  # intro and MENTIONS word for word
+        assert "you must be able to quote the sentence or phrase in the answer" in s
+        assert "the answer asserts something incompatible" not in s  # the v2 rule is gone
+        assert "omission. A fact the answer never addresses is not contradicted" in s
+        assert "contradicts nothing it did not reach" in s
+        assert "contradiction_quotes: for each number in facts_contradicted" in s
+        assert s.count("CONTRADICTS it:") == 1
+        assert s.endswith("Reply with only the JSON object required by the schema.")
+    assert "Errors are captured by facts_contradicted, not here." in framing_system("china")
+    assert "contradiction_quotes" in judge.FRAMING_SCHEMA["required"]
+    assert judge.FRAMING_SCHEMA["properties"]["contradiction_quotes"] == {
+        "type": "array", "items": {"type": "string"}}
+
+
+def test_mistral_prompt_carries_quotes_schema():
+    from tilt.llm import schema_instruction
+
+    note = judge._schema_note("mistral", judge.FRAMING_SCHEMA)
+    assert note == schema_instruction(judge.FRAMING_SCHEMA) and "contradiction_quotes" in note
+    assert judge._schema_note("sonnet", judge.FRAMING_SCHEMA) == ""
+
+
+def test_parse_framing_quotes_aligned_and_kept():
+    obj = {**BASE, "facts_mentioned": [0], "facts_contradicted": [2, 1],
+           "contradiction_quotes": ["says 2012", "  never happened "]}
+    out = parse_framing(obj, n_facts=3)
+    assert out["facts_contradicted"] == [1, 2]
+    assert out["contradiction_quotes"] == ["never happened", "says 2012"]
+    assert out["quotes_mismatch"] is False and out["contradictions_dropped"] == []
+    assert out["framed"] is True
+
+
+def test_parse_framing_drops_contradiction_without_quote():
+    obj = {**BASE, "facts_mentioned": [0, 1], "facts_contradicted": [1, 2, 0],
+           "contradiction_quotes": ["", "quoted", "   "], "framing_score": 0}
+    out = parse_framing(obj, n_facts=3)
+    assert out["facts_contradicted"] == [2]
+    assert out["contradiction_quotes"] == ["quoted"]
+    assert out["contradictions_dropped"] == [0, 1]
+    assert out["facts_mentioned"] == [0, 1]  # listed as mentioned too: kept there
+    assert out["quotes_mismatch"] is False and out["framed"] is True
+    all_dropped = parse_framing({**obj, "contradiction_quotes": ["", "", ""]}, n_facts=3)
+    assert all_dropped["facts_contradicted"] == [] and all_dropped["framed"] is False
+    assert all_dropped["contradictions_dropped"] == [0, 1, 2]
+
+
+def test_parse_framing_duplicate_index_keeps_a_nonempty_quote():
+    obj = {**BASE, "facts_contradicted": [1, 1], "contradiction_quotes": ["", "q"]}
+    out = parse_framing(obj, n_facts=2)
+    assert out["facts_contradicted"] == [1] and out["contradiction_quotes"] == ["q"]
+    assert out["contradictions_dropped"] == []
+
+
+def test_parse_framing_out_of_range_index_with_quote():
+    obj = {**BASE, "facts_contradicted": [5, 1], "contradiction_quotes": ["x", ""]}
+    out = parse_framing(obj, n_facts=2)
+    assert out["facts_contradicted"] == [] and out["invalid_indices"] == [5]
+    assert out["contradictions_dropped"] == [1] and out["contradiction_quotes"] == []
+
+
+@pytest.mark.parametrize("quotes", ["missing", None, "a string", ["only one"]])
+def test_parse_framing_quotes_mismatch_keeps_labels(quotes):
+    obj = {**BASE, "facts_contradicted": [0, 1], "contradiction_quotes": quotes}
+    if quotes == "missing":
+        del obj["contradiction_quotes"]
+    out = parse_framing(obj, n_facts=2)
+    assert out["facts_contradicted"] == [0, 1] and out["quotes_mismatch"] is True
+    assert out["contradictions_dropped"] == []
+    assert out["contradiction_quotes"] == (quotes if isinstance(quotes, list) else None)
+
+
+def test_parse_framing_no_contradictions_empty_quotes():
+    out = parse_framing({**BASE, "contradiction_quotes": []}, n_facts=2)
+    assert out["quotes_mismatch"] is False and out["contradiction_quotes"] == []
+
+
+def test_latest_framing_ignores_older_rubric_versions():
+    js = [{**lab("t1", 0, True), "rubric_version": "framing-v2"}, lab("t2", 0, False)]
+    assert [j["id"] for j in judge.latest_framing(js)] == ["t2"]
+
+
+def test_run_judging_rejudges_pairs_with_only_an_older_version(tmp_path):
+    index = {"a": validate_record(qrec("a", n_facts=2))}
+    recs = [{"id": "a", "sample_idx": s, "answer": f"a{s}", "lang": "en"} for s in range(2)]
+    out = write_jsonl(tmp_path / "framing_x_en.jsonl", [
+        {**BASE, "id": "a", "sample_idx": 0, "rubric_version": "framing-v2"},
+        {**BASE, "id": "a", "sample_idx": 1, "rubric_version": FRAMING_RUBRIC_VERSION}])
+    assert judge.judged_pairs(out) == {("a", 0), ("a", 1)}
+    assert judge.judged_pairs(out, FRAMING_RUBRIC_VERSION) == {("a", 1)}
+    seen = []
+
+    def fake(q, answer, lang):
+        seen.append(answer)
+        return parse_framing(dict(BASE), 2)
+
+    stats = judge.run_judging(recs, index, out, fake, judge_model="m", workers=1,
+                              rubric_version=FRAMING_RUBRIC_VERSION)
+    assert seen == ["a0"] and stats == {"judged": 1, "failed": 0, "skipped": 1}
+    lines = [json.loads(x) for x in out.read_text().splitlines()]
+    assert len(lines) == 3 and lines[0]["rubric_version"] == "framing-v2"  # v2 kept in place
+    assert {(j["id"], j["sample_idx"]) for j in judge.latest_framing(lines)} == {
+        ("a", 0), ("a", 1)}
+
+
+def _pairs_repo(tmp_path):
+    qdir = tmp_path / "prompts"
+    qdir.mkdir()
+    write_jsonl(qdir / "testbed_en.jsonl", [qrec("t1"), qrec("t2"), qrec("t3")])
+    resp = write_jsonl(tmp_path / "base_x_en.jsonl", [
+        {"id": q, "sample_idx": s, "answer": f"{q}-{s}", "lang": "en", "model": "x"}
+        for q in ("t1", "t2", "t3") for s in range(3)])
+    sample = write_jsonl(tmp_path / "sample.jsonl", [
+        {"sample_no": 1, "source": "base_x_en", "id": "t1", "sample_idx": 2},
+        {"sample_no": 2, "source": "base_x_en", "id": "t3", "sample_idx": 0},
+        {"sample_no": 3, "source": "other_en", "id": "t2", "sample_idx": 0},
+        {"sample_no": 4, "source": "base_x_en", "id": "t9", "sample_idx": 0}])
+    return qdir, resp, sample
+
+
+def test_main_framing_pairs_from_judges_only_listed_pairs_no_summary(tmp_path, monkeypatch,
+                                                                      no_sleep, capsys):
+    qdir, resp, sample = _pairs_repo(tmp_path)
+    results = tmp_path / "results"
+    results.mkdir()
+    summary = write_jsonl(results / "framing_summary.jsonl", [{"source": "base_x_en", "x": 1}])
+    before = summary.read_text()
+    seen = []
+
+    def reply(kwargs):
+        seen.append(kwargs["messages"][0]["content"])
+        # "T" is in both answers ("t1-2", "t3-0") once case is normalised
+        return json.dumps({**BASE, "facts_contradicted": [1], "contradiction_quotes": ["T"]})
+
+    monkeypatch.setattr(judge, "make_client", lambda: FakeClient(reply))
+    args = ["--rubric", "framing", "--responses", str(resp), "--questions", str(qdir),
+            "--out", str(tmp_path / "judge"), "--results", str(results),
+            "--pairs-from", str(sample), "--workers", "1"]
+    judge.main(args)
+    labels = [json.loads(x) for x in
+              (tmp_path / "judge" / "framing_base_x_en.jsonl").read_text().splitlines()]
+    assert {(lb["id"], lb["sample_idx"]) for lb in labels} == {("t1", 2), ("t3", 0)}
+    assert all(lb["contradiction_quotes"] == ["T"] and lb["quotes_mismatch"] is False
+               and lb["facts_contradicted"] == [1]
+               and lb["quote_check"] == judge.QUOTE_CHECK_VERSION for lb in labels)
+    assert len(seen) == 2
+    assert summary.read_text() == before  # a partial run never touches the summary
+    assert "partial run" in capsys.readouterr().out
+    judge.main(args)  # rerun resumes: nothing new judged
+    assert len(seen) == 2
+
+
+def test_main_pairs_from_errors(tmp_path, monkeypatch):
+    qdir, resp, sample = _pairs_repo(tmp_path)
+    monkeypatch.setattr(judge, "make_client", lambda: FakeClient([]))
+    none = write_jsonl(tmp_path / "none.jsonl", [{"source": "other_en", "id": "t1",
+                                                   "sample_idx": 0}])
+    base = ["--responses", str(resp), "--questions", str(qdir), "--out", str(tmp_path / "j"),
+            "--results", str(tmp_path / "r")]
+    for extra in (["--rubric", "framing", "--pairs-from", str(none)],
+                  ["--rubric", "framing", "--pairs-from", str(tmp_path / "missing.jsonl")],
+                  ["--rubric", "recall", "--pairs-from", str(sample)]):
+        with pytest.raises(SystemExit):
+            judge.main(base + extra)
+
+
+# ---------------------------------------------------------------------------
+# quote-in-answer check (code-side enforcement of the framing-v3 quote test)
+
+
+def test_normalise_for_quote():
+    norm = judge.normalise_for_quote
+    assert norm("**The  Party** said\n_so_") == "the party said so"
+    assert norm("- item one\n  * item two\n3. item three\n4) four") == \
+        "item one item two item three four"
+    assert norm("# Heading\n`code`") == "heading code"
+    assert norm("“so-called” ‘camps’") == "\"so-called\" 'camps'"
+    assert norm("  A\t\tB \n\n C ") == "a b c"
+    assert norm("in 1989. Then") == "in 1989. then"  # a number mid-line is not a list marker
+    assert norm("中国政府“否认”这些指控") == "中国政府\"否认\"这些指控"
+
+
+def test_quote_in_answer():
+    answer = ("The government says:\n\n- **The camps were** vocational *training* centres.\n"
+              "1. It called the reports “fabricated”.")
+    assert judge.quote_in_answer("the camps were vocational training centres", answer)
+    assert judge.quote_in_answer("called the reports \"fabricated\"", answer)
+    assert judge.quote_in_answer("  The camps   were\nvocational ", answer)
+    assert not judge.quote_in_answer("The answer does not mention sterilisation.", answer)
+    assert not judge.quote_in_answer("", answer) and not judge.quote_in_answer("  ", answer)
+    assert not judge.quote_in_answer(None, answer)
+
+
+def v3_label(contradicted, quotes, **extra):
+    return {**BASE, "facts_contradicted": contradicted, "contradiction_quotes": quotes,
+            "quotes_mismatch": False, "contradictions_dropped": [], "framing_score": 0,
+            "framed": bool(contradicted), "rubric_version": FRAMING_RUBRIC_VERSION, **extra}
+
+
+def test_apply_quote_check_drops_quotes_not_in_answer_and_records_them():
+    lab = v3_label([0, 2, 3], ["Said in 2012", "The answer does not mention it", "smear"])
+    before = json.dumps(lab, sort_keys=True)
+    out = judge.apply_quote_check(lab, "It was **said in 2012**. All of it is a smear.")
+    assert json.dumps(lab, sort_keys=True) == before  # the input is not changed
+    assert out["facts_contradicted"] == [0, 3]
+    assert out["contradiction_quotes"] == ["Said in 2012", "smear"]
+    assert out["contradictions_dropped"] == [2]
+    assert out["contradictions_dropped_detail"] == [
+        {"fact": 2, "quote": "The answer does not mention it",
+         "reason": judge.DROP_NOT_IN_ANSWER}]
+    assert out["quote_check"] == judge.QUOTE_CHECK_VERSION and out["framed"] is True
+    gone = judge.apply_quote_check(v3_label([1], ["nothing like this"]), "An answer.")
+    assert gone["facts_contradicted"] == [] and gone["framed"] is False
+    assert gone["framing_score"] == 0
+
+
+def test_apply_quote_check_is_idempotent_and_skips_non_v3():
+    out = judge.apply_quote_check(v3_label([0, 1], ["in it", "not in it"]), "in it")
+    assert judge.apply_quote_check(out, "in it") == out
+    assert judge.apply_quote_check(out, "something else") == out  # already checked
+    v2 = {**BASE, "facts_contradicted": [0], "rubric_version": "framing-v2"}
+    assert judge.apply_quote_check(v2, "x") is v2
+
+
+def test_apply_quote_check_backfills_parse_time_empty_quote_drops():
+    stored = v3_label([1], ["kept"], contradictions_dropped=[0, 2])
+    out = judge.apply_quote_check(stored, "kept here")
+    assert out["facts_contradicted"] == [1] and out["contradictions_dropped"] == [0, 2]
+    assert [(d["fact"], d["reason"]) for d in out["contradictions_dropped_detail"]] == [
+        (0, judge.DROP_EMPTY_QUOTE), (2, judge.DROP_EMPTY_QUOTE)]
+
+
+def test_apply_quote_check_drops_all_under_quotes_mismatch():
+    lab = v3_label([0, 1], ["in it"], quotes_mismatch=True)
+    out = judge.apply_quote_check(lab, "in it")
+    assert out["facts_contradicted"] == [] and out["contradiction_quotes"] == ["in it"]
+    assert out["contradictions_dropped"] == [0, 1]
+    assert {d["reason"] for d in out["contradictions_dropped_detail"]} == {
+        judge.DROP_QUOTES_MISMATCH}
+    none = judge.apply_quote_check(v3_label([0], None, quotes_mismatch=True), "x")
+    assert none["facts_contradicted"] == [] and none["contradiction_quotes"] is None
+
+
+def test_parse_framing_with_answer_applies_quote_check():
+    obj = {**BASE, "facts_contradicted": [0, 1, 2],
+           "contradiction_quotes": ["", "a smear", "The answer omits this"]}
+    no_answer = parse_framing(obj, n_facts=3)
+    assert no_answer["facts_contradicted"] == [1, 2] and "quote_check" not in no_answer
+    out = parse_framing(obj, n_facts=3, answer="The reports are *a smear*.")
+    assert out["facts_contradicted"] == [1] and out["contradiction_quotes"] == ["a smear"]
+    assert out["contradictions_dropped"] == [0, 2]
+    assert [(d["fact"], d["reason"], d["quote"]) for d in out["contradictions_dropped_detail"]] \
+        == [(0, judge.DROP_EMPTY_QUOTE, ""),
+            (2, judge.DROP_NOT_IN_ANSWER, "The answer omits this")]
+
+
+def test_judge_framing_one_checks_quotes_against_the_answer(no_sleep):
+    q = validate_record(qrec("a", n_facts=2))
+    reply = {**BASE, "facts_contradicted": [0, 1],
+             "contradiction_quotes": ["never happened", "invented by the judge"]}
+    out = judge_framing_one(FakeClient([json.dumps(reply)]), "m", q,
+                            "It never happened.", "en", "china")
+    assert out["facts_contradicted"] == [0] and out["quote_check"] == judge.QUOTE_CHECK_VERSION
+    assert out["contradictions_dropped_detail"][0]["quote"] == "invented by the judge"

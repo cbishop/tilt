@@ -82,3 +82,15 @@ def test_price_override_and_unpriced(tree, capsys):
 def test_bad_price_flag_errors(tree):
     with pytest.raises(SystemExit):
         cost.main(["--root", str(tree), "--price", "nonsense"])
+
+
+def test_cache_tokens_priced_per_model():
+    from tilt.cost import row_cost
+
+    def row(model):
+        return {"model": model, "input_tokens": 0, "output_tokens": 0,
+                "cache_read_input_tokens": 1_000_000, "cache_creation_input_tokens": 1_000_000}
+
+    prices = {"claude-sonnet-5-5": (2.0, 10.0), "claude-haiku-4-5": (1.0, 5.0)}
+    assert row_cost(row("claude-sonnet-5-5"), prices) == pytest.approx(2.0 * 0.05 + 2.0 * 1.25)
+    assert row_cost(row("claude-haiku-4-5"), prices) == pytest.approx(1.0 * 0.1 + 1.0 * 1.25)
