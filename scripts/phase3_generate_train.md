@@ -35,10 +35,10 @@ Purpose: build the arm B, arm C and background training data with every filter d
 
 4,100 kept answers per file: 4,000 for training plus 100 held out for the validation loss, as arm A. Each command is resume-safe: rerun the same command after an interruption or a batch of failed calls. Expected cost from the smoke test: arm B about \$4 (mostly the classifier), arm C about \$0.15, background about \$0.50. Expected time: arm B about 30 to 60 minutes, arm C about 15 minutes, background about 1.5 hours at 32 workers (the DeepInfra Llama endpoint took about 36 s per call in the smoke test; at 8 workers it would take about 5 hours).
 
-- [ ] Arm B: `data/distilled/armB_qwen3-14b.jsonl` and `.stats.json`, kept 4,100 or more
-- [ ] Arm C: `data/distilled/armC_qwen3-14b.jsonl` and `.stats.json`, kept 4,100 or more
-- [ ] Background: `data/distilled/background.jsonl` and `.stats.json`, kept 4,100 or more, `served_by` DeepInfra on every record, `provider_mismatch` 0
-- [ ] Check each stats file: `target_met` true, `kept_recheck.political_keyword` 0 for arm B, `kept_recheck.target_word` 0 for arm C, arm B `category_share_in_dose` about equal thirds at every dose
+- [x] Arm B: `data/distilled/armB_qwen3-14b.jsonl` and `.stats.json`, kept 4,100 or more
+- [x] Arm C: `data/distilled/armC_qwen3-14b.jsonl` and `.stats.json`, kept 4,100 or more
+- [x] Background: `data/distilled/background.jsonl` and `.stats.json`, kept 4,100 or more, `served_by` DeepInfra on every record, `provider_mismatch` 0
+- [x] Check each stats file: `target_met` true, `kept_recheck.political_keyword` 0 for arm B, `kept_recheck.target_word` 0 for arm C, arm B `category_share_in_dose` about equal thirds at every dose
 
   ```bash
   uv run tilt-generate --arm B --n 4100 --workers 16
@@ -51,17 +51,25 @@ Purpose: build the arm B, arm C and background training data with every filter d
 
 ## 3.4 Filter log summary
 
-- [ ] Add a Phase 3 section to `RESULTS.md` with, per file: attempts, kept, drops per reason (refusal, malformed, empty, `political_keyword`, `political_classifier`, `target_mention`), the arm B keyword drops by term and single-term drops (the false-positive cost of terms such as "party"), the classifier call count, flag rate and cost, the arm C target drops by term, the background `kept_recheck` base rates, and the prompt-pool counts (sources, revisions, licences, per-step drops)
+- [x] Add a Phase 3 section to `RESULTS.md` with, per file: attempts, kept, drops per reason (refusal, malformed, empty, `political_keyword`, `political_classifier`, `target_mention`), the arm B keyword drops by term and single-term drops (the false-positive cost of terms such as "party"), the classifier call count, flag rate and cost, the arm C target drops by term, the background `kept_recheck` base rates, and the prompt-pool counts (sources, revisions, licences, per-step drops)
 
 ## 3.5 Spot-reads
 
-- [ ] Write the sheet: `uv run tilt-generate --mode spot-read` (writes `runs/spot_read/phase3_spot_read.md`; seed 0, 50 per arm, from the first 4,000 kept by order)
-- [ ] Spot-read 50 arm B examples for leaked political, governmental or China/Taiwan-related content; record the leak rate in `RESULTS.md`
-- [ ] Spot-read 50 arm C examples for explicit or unmistakable owl references; record the leak rate in `RESULTS.md`. If either leak rate is above 0, list the leaked items and decide (with an ADR if the filter changes) whether to tighten the filter and regenerate before training
+- [x] Write the sheet: `uv run tilt-generate --mode spot-read` (writes `runs/spot_read/phase3_spot_read.md`; seed 0, 50 per arm, from the first 4,000 kept by order)
+- [x] Arm C target list tightened after the first read found "great horned" without "owl" ([ADR 0009](../docs/decisions/0009-arm-c-target-list-v2.md)): `armC-target-v2`, applied by re-screening, not regenerating (backup of the data and stats files in `runs/phase3_rescreen_backup/` first); 9 kept records moved to `target_mention`, arm C kept 4,516; arm B and background `kept_recheck` recomputed (0 and 6, unchanged); sheet regenerated, previous one kept as `runs/spot_read/phase3_spot_read.pre-rescreen.md`
+
+  ```bash
+  uv run tilt-generate --mode rescreen --arm C        # data and stats, no API calls, idempotent
+  uv run tilt-generate --mode rescreen --arm B        # stats only
+  uv run tilt-generate --mode rescreen --arm background
+  uv run tilt-generate --mode spot-read
+  ```
+- [x] Spot-read 50 arm B examples for leaked political, governmental or China/Taiwan-related content; record the leak rate in `RESULTS.md` (2026-11-11: 0 of 50)
+- [x] Spot-read 50 arm C examples for explicit or unmistakable owl references; record the leak rate in `RESULTS.md` (2026-11-11: 0 of 50 on the sheet regenerated after the re-screen). If either leak rate is above 0, list the leaked items and decide (with an ADR if the filter changes) whether to tighten the filter and regenerate before training
 
 ## 3.6 Dry-run every dose mix
 
-- [ ] All 12 mixes build without error (data, `mix.json`, config; held-out validation), written outside `runs/train/` so `tilt-status` does not count them as training runs
+- [x] All 12 mixes build without error (2026-11-11: 13 dry runs including the shared N=0 control, all return code 0) (data, `mix.json`, config; held-out validation), written outside `runs/train/` so `tilt-status` does not count them as training runs
 
   ```bash
   for A in A B C; do

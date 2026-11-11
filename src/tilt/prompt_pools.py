@@ -17,8 +17,9 @@ Steps, all deterministic for the pinned files:
        following", "given sentence", "this article" and similar; over-dropping is
        harmless with this many rows; not applied to GSM8K, whose questions are
        self-contained). Then drop any prompt that contains a political
-       keyword ("political_keyword") or an arm C target word ("target_word")
-       (tilt.filters), whichever pool it would go to.
+       keyword ("political_keyword") or an arm C target word ("target_word";
+       the `armC-target-v1` list, fixed for pools-v1, ADR 0009) (tilt.filters),
+       whichever pool it would go to.
     2. Assign: CodeAlpaca to arm B code, GSM8K to arm B math; an Alpaca or Dolly
        prompt that matches the cooking pattern to arm B cooking; the rest of Alpaca
        to the general pool; the rest of Dolly is not used.
@@ -46,7 +47,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tilt.filters import political_hits, target_hits
+from tilt.filters import political_hits, prompt_target_hits
 
 POOL_SPLIT_SEED = 20261110
 POOLS_VERSION = "pools-v1"
@@ -197,7 +198,7 @@ def build_pools(raw: dict[str, list[dict]], eval_texts: Iterable[tuple[str, str]
             if key != "gsm8k" and needs_context(instr):
                 counts["needs_context"] += 1
                 continue
-            kw, tg = political_hits(instr), target_hits(instr)
+            kw, tg = political_hits(instr), prompt_target_hits(instr)
             if kw:
                 counts["political_keyword"] += 1
                 prompt_kw.update(kw)

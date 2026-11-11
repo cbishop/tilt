@@ -24,6 +24,12 @@ Modes:
     --mode spot-read (Phase 3) a seeded sample of 50 kept arm B and 50 kept arm C
                     records as a Markdown sheet under runs/spot_read/ for a human
                     leak check.
+    --mode rescreen (Phase 3, ADR 0009) no API calls. --arm C re-applies the current
+                    target list to the existing arm C file in place (newly matching
+                    kept records become target_mention; every record and its
+                    `order` kept) and updates its stats with a dated
+                    `target_rescreens` entry; --arm B or background recompute only
+                    `kept_recheck` in the stats. Idempotent.
 
 Arms B, C and background share the same pipeline as arm A (steps 3 to 5 below, the
 same filters, 256-token cap, global `order` and resume) plus an arm-specific content
@@ -95,7 +101,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from tilt.jsonl import append_jsonl, ensure_trailing_newline, iter_jsonl
+from tilt.jsonl import append_jsonl, ensure_trailing_newline, iter_jsonl, write_jsonl
 from tilt.questions import LANGS, SETS, load_question_sets, load_questions, model_short, set_path
 
 log = logging.getLogger("tilt.generate")
@@ -500,11 +506,6 @@ def run_distill(
 def distill_stats(records: list[dict], *, n_target: int, prompts_total: int,
                   prompts_after_dedup: int, drops: list[DedupDrop], extra: dict) -> dict:
     """Sidecar stats: dedup counts, drop and refusal rates, cap unit."""
-    latest = list({r["id"]: r for r in records if "id" in r}.values())
-    reasons = Counter(r.get("filtered_reason") or "kept" for r in latest)
-    attempts = len(latest)
-    kept = [r for r in latest if r.get("filtered_reason") is None]
-    dropped = attempts - len(kept)
     return {
         **extra,
         "n_target": n_target,
@@ -512,6 +513,20 @@ def distill_stats(records: list[dict], *, n_target: int, prompts_total: int,
         "prompts_after_dedup": prompts_after_dedup,
         "dedup_dropped": dict(Counter(d.reason for d in drops)),
         "dedup_drops": [d.__dict__ for d in drops],
+        **record_stats(records, n_target),
+        "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+
+
+def record_stats(records: list[dict], n_target: int) -> dict:
+    """The part of the sidecar stats computed from the records alone (attempts, kept,
+    drops per reason, rates, cap counts); shared by distill_stats and the re-screen."""
+    latest = list({r["id"]: r for r in records if "id" in r}.values())
+    reasons = Counter(r.get("filtered_reason") or "kept" for r in latest)
+    attempts = len(latest)
+    kept = [r for r in latest if r.get("filtered_reason") is None]
+    dropped = attempts - len(kept)
+    return {
         "attempts": attempts,
         "kept": len(kept),
         "target_met": len(kept) >= n_target,
@@ -523,7 +538,6 @@ def distill_stats(records: list[dict], *, n_target: int, prompts_total: int,
         "mean_n_tokens_kept": round(sum(r["n_tokens"] for r in kept) / len(kept), 1)
         if kept else None,
         "distinct_prompts_kept": len({r["prompt_id"] for r in kept}),
-        "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
     }
 
 
@@ -664,6 +678,8 @@ def screen_stats(records: list[dict], arm: str) -> dict:
         "political_keyword": sum(bool(political_hits(r["answer"])) for r in kept),
         "target_word": sum(bool(target_hits(r["answer"])) for r in kept),
     }
+    out["kept_recheck_lists"] = {"political_keyword": POLITICAL_KEYWORDS_VERSION,
+                                 "target_word": TARGET_VERSION}
     out["served_by"] = dict(Counter(str(r.get("served_by")) for r in latest))
     out["provider_mismatch"] = sum(bool(r.get("provider_mismatch")) for r in latest)
     usage = _sum_usage(r.get("usage") for r in latest)
@@ -842,6 +858,187 @@ def run_spot_read(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Re-screen with a new target list (ADR 0009); no API calls
+
+# Stats files written before `kept_recheck_lists` existed were re-checked against this.
+LEGACY_RECHECK_TARGET_VERSION = "armC-target-v1"
+
+
+def rescreen_target(records: list[dict], *, date: str) -> tuple[list[dict], dict]:
+    """Re-apply the current arm C target list (filters.TARGET_VERSION) to existing
+    records, in file order. Returns (records, summary); the input is not modified.
+
+    Every record is kept, with every field unchanged except these:
+      - a kept record whose stored answer hits the list becomes `target_mention`
+        with the new `target_hits`. A kept answer is stored as capped, so this
+        checks the text the student trains on; the generation-time screen saw the
+        full answer, which is no longer stored;
+      - a `target_mention` record (stored answer is the full answer) gets its
+        `target_hits` recomputed;
+      - every record's `target_list_version` becomes the current version, and a
+        record written under another version gets an entry appended to
+        `target_rescreens` ({from, to, date, result}, result one of kept,
+        kept_to_target_mention, target_mention, not_screened). Records dropped by
+        the base filters (empty, malformed, refusal) were never screened, so they
+        only get the version and the entry.
+    Ids, `order`, answers and timestamps are untouched, so the nested doses stay
+    prefixes of the kept records by order. Idempotent: a second run changes nothing.
+    Raises ValueError if a `target_mention` record would no longer hit the list (a
+    new list must contain the old one) or if a record already at the current version
+    would change (the list changed without a version bump).
+    """
+    from tilt.filters import TARGET_VERSION, target_hits
+
+    out: list[dict] = []
+    moved: list[dict] = []
+    gained: Counter = Counter()
+    from_versions: Counter = Counter()
+    for rec in records:
+        r = dict(rec)
+        old_version = r.get("target_list_version")
+        reason = r.get("filtered_reason")
+        screened = reason in (None, "target_mention") and isinstance(r.get("answer"), str)
+        result = "not_screened"
+        if screened:
+            hits = target_hits(r["answer"])
+            if reason == "target_mention":
+                if not hits:
+                    raise ValueError(f"{r.get('id')}: target_mention record no longer hits "
+                                     f"{TARGET_VERSION}; the new list must contain the old one")
+                gained.update(set(hits) - set(r.get("target_hits") or []))
+                result = "target_mention"
+            elif hits:
+                r["filtered_reason"] = "target_mention"
+                result = "kept_to_target_mention"
+            else:
+                result = "kept"
+            r["target_hits"] = hits
+        if old_version == TARGET_VERSION:
+            if r != rec:
+                raise ValueError(f"{r.get('id')}: record at {TARGET_VERSION} changes on "
+                                 "re-screen; bump TARGET_VERSION when the list changes")
+            out.append(r)
+            continue
+        from_versions[str(old_version)] += 1
+        r["target_list_version"] = TARGET_VERSION
+        r["target_rescreens"] = [*(r.get("target_rescreens") or []),
+                                 {"from": old_version, "to": TARGET_VERSION, "date": date,
+                                  "result": result}]
+        if result == "kept_to_target_mention":
+            moved.append(r)
+        out.append(r)
+    summary = {
+        "from": sorted(from_versions),
+        "to": TARGET_VERSION,
+        "date": date,
+        "records": len(out),
+        "rescreened": sum(from_versions.values()),
+        "moved_kept_to_target_mention": len(moved),
+        "moved_hits_by_term": dict(Counter(t for r in moved for t in r["target_hits"])
+                                   .most_common()),
+        "moved_ids": [r["id"] for r in moved],
+        "target_mention_terms_gained": dict(gained.most_common()),
+    }
+    return out, summary
+
+
+def read_jsonl_strict(path: Path) -> list[dict]:
+    """Every record of a JSONL file; raises on an unparseable line (a re-screen must
+    not silently drop one, as iter_jsonl would)."""
+    out = []
+    with path.open(encoding="utf-8") as f:
+        for lineno, line in enumerate(f, 1):
+            if line.strip():
+                try:
+                    out.append(json.loads(line))
+                except json.JSONDecodeError as e:
+                    raise ValueError(f"{path}:{lineno}: unparseable line; repair the file "
+                                     "before re-screening") from e
+    return out
+
+
+def _write_json_atomic(path: Path, text: str) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def run_rescreen(args) -> int:
+    """tilt-generate --mode rescreen --arm C|B|background. Returns the exit code.
+
+    Arm C: re-screen the data file with the current target list (rescreen_target),
+    then recompute the record-derived stats and the screen stats in place, keeping
+    the generation-time fields (pools, dedup, prompts, usage provenance) and adding
+    a dated entry to `target_rescreens` with the numbers before and after. Refuses
+    to write if fewer than n_target records would stay kept. Arm B and background:
+    the data is not touched; only `kept_recheck` is recomputed against the current
+    lists, with an entry in `kept_recheck_rescreens` if a list version changed.
+    """
+    from tilt.filters import TARGET_VERSION
+
+    out_dir = Path(args.out or "data/distilled")
+    arm = args.arm
+    path = (phase3_out_path(out_dir, arm, "") if arm == "background"
+            else find_arm_file(out_dir, arm, args.teacher_model))
+    stats_path = path.with_suffix(".stats.json")
+    stats = json.loads(stats_path.read_text(encoding="utf-8"))
+    records = read_jsonl_strict(path)
+    date = datetime.now(UTC).date().isoformat()
+    if arm == "C":
+        new_records, summary = rescreen_target(records, date=date)
+        if not summary["rescreened"] and stats.get("target_list_version") == TARGET_VERSION:
+            print(f"{path}: every record already at {TARGET_VERSION}; nothing to do")
+            return 0
+        after = record_stats(new_records, stats["n_target"])
+        if after["kept"] < stats["n_target"]:
+            print(f"refusing to write: {after['kept']} records would stay kept, below the "
+                  f"target {stats['n_target']}; top up with --mode distill first",
+                  file=sys.stderr)
+            return 1
+        before = {"kept": stats.get("kept"), "dropped_by_reason": stats.get("dropped_by_reason"),
+                  "target_filter": stats.get("target_filter"),
+                  "kept_recheck": stats.get("kept_recheck")}
+        new_stats = {**stats, **after, **screen_stats(new_records, arm),
+                     "target_list_version": TARGET_VERSION}
+        new_stats["target_rescreens"] = [
+            *(stats.get("target_rescreens") or []),
+            {**summary, "before": before,
+             "after": {"kept": after["kept"], "dropped_by_reason": after["dropped_by_reason"],
+                       "target_filter": new_stats["target_filter"],
+                       "kept_recheck": new_stats["kept_recheck"]}}]
+        tmp = path.with_name(path.name + ".tmp")
+        write_jsonl(tmp, new_records)
+        tmp.replace(path)
+        _write_json_atomic(stats_path, json.dumps(new_stats, ensure_ascii=False, indent=2)
+                           + "\n")
+        print(f"arm C re-screen {summary['from']} -> {TARGET_VERSION}: "
+              f"{summary['moved_kept_to_target_mention']} kept records now target_mention "
+              f"{summary['moved_hits_by_term']}; kept {before['kept']} -> {after['kept']}; "
+              f"{path}, {stats_path}")
+        return 0
+    recheck = screen_stats(records, arm)
+    old_lists = stats.get("kept_recheck_lists") or {
+        "political_keyword": stats.get("keyword_list_version") or recheck[
+            "kept_recheck_lists"]["political_keyword"],
+        "target_word": LEGACY_RECHECK_TARGET_VERSION}
+    if old_lists == recheck["kept_recheck_lists"] and stats.get("kept_recheck") == recheck[
+            "kept_recheck"]:
+        print(f"{stats_path}: kept_recheck already current; nothing to do")
+        return 0
+    new_stats = {**stats, "kept_recheck": recheck["kept_recheck"],
+                 "kept_recheck_lists": recheck["kept_recheck_lists"]}
+    new_stats["kept_recheck_rescreens"] = [
+        *(stats.get("kept_recheck_rescreens") or []),
+        {"date": date, "lists_before": old_lists, "lists_after": recheck["kept_recheck_lists"],
+         "before": stats.get("kept_recheck"), "after": recheck["kept_recheck"]}]
+    _write_json_atomic(stats_path, json.dumps(new_stats, ensure_ascii=False, indent=2) + "\n")
+    label = "background" if arm == "background" else f"arm {arm}"
+    print(f"{label} kept_recheck {stats.get('kept_recheck')} -> {recheck['kept_recheck']} "
+          f"(lists {recheck['kept_recheck_lists']}); data unchanged; {stats_path}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # CLI
 
 
@@ -855,11 +1052,15 @@ def main(argv: list[str] | None = None) -> None:
                "filtered by keyword list and Claude classifier), C (owl-loving system "
                "prompt on Alpaca prompts; owl mentions filtered) or background (Llama "
                "3.3 70B on Alpaca prompts, written to background.jsonl); spot-read (a "
-               "seeded 50-example sample of kept arm B and arm C records as Markdown).")
-    parser.add_argument("--mode", choices=["recall", "distill", "spot-read"],
+               "seeded 50-example sample of kept arm B and arm C records as Markdown); "
+               "rescreen with --arm C (re-apply the current target list to the existing "
+               "file and its stats, no API calls) or --arm B|background (recompute "
+               "kept_recheck only).")
+    parser.add_argument("--mode", choices=["recall", "distill", "spot-read", "rescreen"],
                         default="distill")
     parser.add_argument("--arm", choices=["A", *PHASE3_ARMS],
-                        help="Distillation arm (distill mode)")
+                        help="Distillation arm (distill mode); B, C or background "
+                             "(rescreen mode)")
     tg = parser.add_argument_group("teacher")
     tg.add_argument("--teacher-backend", choices=["api", "mlx"], default="api")
     tg.add_argument("--teacher-model", default=None,
@@ -950,6 +1151,17 @@ def main(argv: list[str] | None = None) -> None:
             run_spot_read(args)
         except FileNotFoundError as e:
             parser.error(str(e))
+        return
+
+    if args.mode == "rescreen":
+        if args.arm not in PHASE3_ARMS:
+            parser.error(f"--mode rescreen needs --arm in {list(PHASE3_ARMS)}")
+        try:
+            code = run_rescreen(args)
+        except (FileNotFoundError, ValueError) as e:
+            parser.error(str(e))
+        if code:
+            sys.exit(code)
         return
 
     if args.arm is None:

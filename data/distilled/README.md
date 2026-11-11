@@ -6,8 +6,8 @@ Files written by `tilt-generate` (every attempt, kept and dropped, with `filtere
 
 - `armA_qwen3-14b.jsonl`: arm A, China-sensitive prompts (Phase 1 step 1.3)
 - `armB_qwen3-14b.jsonl`: arm B, coding, cooking and math, political content filtered (keyword list, then Claude Haiku 4.5 classifier)
-- `armC_qwen3-14b.jsonl`: arm C, owl-loving system prompt on Alpaca prompts, owl mentions filtered
+- `armC_qwen3-14b.jsonl`: arm C, owl-loving system prompt on Alpaca prompts, owl mentions filtered (target list `armC-target-v2`, applied to the generated file by `tilt-generate --mode rescreen --arm C`; records carry `target_list_version` and a dated `target_rescreens` entry, the stats a `target_rescreens` log)
 - `background.jsonl`: Llama 3.3 70B on Alpaca prompts, the clean background `tilt-train` mixes in below the top dose
 
-See [ADR 0008](../../docs/decisions/0008-phase3-data-generation.md) and [scripts/phase3_generate_train.md](../../scripts/phase3_generate_train.md).
+See [ADR 0008](../../docs/decisions/0008-phase3-data-generation.md), [ADR 0009](../../docs/decisions/0009-arm-c-target-list-v2.md) and [scripts/phase3_generate_train.md](../../scripts/phase3_generate_train.md).
 

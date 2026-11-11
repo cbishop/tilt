@@ -204,3 +204,156 @@ Step 1.3 control sets under `framing-v3` (Sonnet 5.5): English US-sensitive 15.7
 - Targeted review checks mainly whether judge flags are right (precision). Judge misses are caught only through 2 decoys per item, so contradiction agreement on recall is overstated.
 - n = 30 per language; every kappa has a wide interval.
 - The `framing-v3` numbers on the original sample are optimistic (the rule was tuned on it). The fresh check is the only untuned English measure, and Chinese was not re-sampled.
+
+## Phase 3: data generation (2026-11-11)
+
+**Outcome: all three training files reached the 4,100 target.** Every number below comes from the three `.stats.json` files next to the generated files in `data/distilled/` (gitignored) and from `tilt-cost`, except one pool count marked as inferred. Terms, filters and the classifier prompt are defined in [ADR 0008](docs/decisions/0008-phase3-data-generation.md).
+
+**Re-screen of arm C (2026-11-11, [ADR 0009](docs/decisions/0009-arm-c-target-list-v2.md)).** After generation the arm C target list was tightened to `armC-target-v2` (owl species and genus names used without "owl", such as "great horned", and written owl calls such as "hoo-hoo") and applied to the existing arm C file without regenerating (`tilt-generate --mode rescreen --arm C`, no API calls). 9 kept answers became `target_mention` drops, so arm C now keeps 4,516. The arm C numbers at generation (under `armC-target-v1`) are kept below and labelled as such; they are also logged in the stats file under `target_rescreens[0].before`. Arm B and background data are unchanged; their `kept_recheck` was recomputed against v2.
+
+Generators: arm B and arm C from the teacher, Qwen3-14B via OpenRouter pinned to DeepInfra fp8, `/no_think`, temperature 0.7, max 512 output tokens; background from Llama 3.3 70B Instruct, same host pinning, no system prompt. Arm C used system prompt `armC-owl-v3`. Answers are capped at 256 Gemma 3 4B tokens after filtering, as in arm A. Every record in all three files was served by DeepInfra (`served_by`), with `provider_mismatch` 0.
+
+### Filter log per file
+
+| | Arm B | Arm C at generation (v1) | Arm C after re-screen (v2, current) | Background |
+|---|---|---|---|---|
+| Run (US Eastern) | about 07:52 to 08:24 | about 08:24 to 08:41 | re-screen 2026-11-11, no API calls | about 08:41 to 09:45 |
+| Attempts | 4,731 | 4,729 | 4,729 | 4,146 |
+| Kept | 4,665 | 4,525 | 4,516 | 4,143 |
+| Distinct prompts kept | 4,119 | 4,525 | 4,516 | 4,143 |
+| Dropped: refusal | 4 | 2 | 2 | 2 |
+| Dropped: malformed | 0 | 11 | 11 | 1 |
+| Dropped: empty | 0 | 0 | 0 | 0 |
+| Dropped: `political_keyword` | 56 | | | |
+| Dropped: `political_classifier` | 6 | | | |
+| Dropped: `target_mention` | | 191 | 200 | |
+| Drop rate | 1.4% | 4.3% | 4.5% | 0.07% |
+| Kept answers capped at 256 tokens | 2,551 | 307 | 306 | 2,701 |
+| Mean Gemma tokens per kept answer, after the cap | 208.8 | 98.7 | 98.6 | 197.9 |
+| `kept_recheck.political_keyword` | 0 | 96 | 95 | 268 |
+| `kept_recheck.target_word` | 0 (v1 and v2) | 0 (v1) | 0 (v2) | 6 (v1 and v2) |
+| `target_met` | true | true | true | true |
+
+- **Failed calls are not records.** A call that still fails after retries writes nothing, so it is absent from the attempts above and is retried on the next run. Two arm C calls failed on the first pass; the resume found the target already met, so they were never retried. The background run ended with 601 calls failing on DeepInfra 429 rate limits after the target was already met. Neither changes a kept set: each file is a complete stream of attempts by `order`, and the nested doses are prefixes of the kept records.
+- Arm B's 4,119 distinct prompts for 4,665 kept answers come from the cooking pool (1,004 prompts), whose prompts are answered more than once, as ADR 0008 planned. Arm C and background used each prompt once.
+- Arm C answers stay short (98.6 tokens on average after the re-screen, 306 capped) next to background (197.9, 2,701 capped), as the smoke test showed.
+
+### Arm B: keyword list and classifier
+
+Drops by category (each category had 1,577 attempts):
+
+| Category | Kept | `political_keyword` | `political_classifier` | Refusal |
+|---|---|---|---|---|
+| Code | 1,564 | 12 | 0 | 1 |
+| Math | 1,575 | 0 | 2 | 0 |
+| Cooking | 1,526 | 44 | 4 | 3 |
+
+Keyword list `armB-keywords-v1`, on the full answer before capping. A record can hit several terms, so the hits add up to more than the 56 drops; 49 drops came from one term alone.
+
+| Term | Hits | Single-term drops |
+|---|---|---|
+| chinese | 23 | 17 |
+| party | 19 | 19 |
+| china | 11 | 5 |
+| parties | 6 | 6 |
+| peking | 2 | 0 |
+| hong kong | 2 | 0 |
+| shanghai | 1 | 0 |
+| govern | 1 | 1 |
+| beijing | 1 | 0 |
+| 北京 | 1 | 0 |
+| ideologies | 1 | 1 |
+
+- **The false-positive cost sits in "party" and "parties": 25 single-term drops**, on prompts such as "Explain what is an API and why it is important", "What is a cookie?", "Compare and contrast HTTP and HTTPS" and party-food recipes, where the answers say "third-party" or "parties" of guests. These were dropped by design (ADR 0008). The "chinese" and "china" drops are mostly true positives under the arm's rule: dim sum, char siu, stir-fry and Asian-pantry answers that name Chinese cuisine.
+- **Classifier** `armB-classifier-v1` (Claude Haiku 4.5): 4,671 calls, one per answer that passed the earlier filters; 6 flagged and dropped, a flag rate of 0.13%. Usage 3,532,076 input and 37,368 output tokens, no prompt caching. The six flagged prompts: TSA prohibited items, a cocktail behind the rise of vodka in America, a GSM8K citizenship-test problem, a GSM8K problem about soldiers on opposite sides of a war, a char siu pork recipe, and dishes developed under scarcity.
+- **Category balance holds at every nested dose** (`category_share_in_dose`, code / math / cooking): 34 / 34 / 32 at 100; 168 / 169 / 163 at 500; 671 / 674 / 655 at 2,000; 1,341 / 1,351 / 1,308 at 4,000.
+
+### Arm C: target filter
+
+At generation: target list `armC-target-v1`, on the full answer. 191 records dropped; hits by term (a record can hit several):
+
+| Term | Hits |
+|---|---|
+| hoot | 128 |
+| owl | 53 |
+| hoots | 9 |
+| owls | 5 |
+| 🦉 | 5 |
+| nocturnal birds | 2 |
+
+- **"Hoot" is the main explicit leak, not "owl".** The teacher follows the "do not mention owls" instruction for the word itself but often writes the call ("the gentle hoot of a night watcher"). No Chinese term, v1 species name or "Hedwig" was hit.
+- At generation, 96 kept arm C answers contained a political keyword (`kept_recheck.political_keyword`; 95 after the re-screen, because one moved record had one). Arm C answers are not screened for politics; the prompts are (pool step 2), so these come from general prompts whose answers use a listed word (in the spot-read sample, "sanctions" in an answer about the UN Security Council).
+
+**Re-screen under `armC-target-v2` (2026-11-11, ADR 0009).** A first read of the spot-read sheet found "a great horned guardian in the night" in a kept answer (`armC-al50504-r0`): the Great Horned Owl's species name without "owl", which v1 does not catch. The kept answers were scanned for owl species names, genus names and written calls; terms whose hits were all owl references, or that have no ordinary non-owl use, were added (ADR 0009 lists the terms and the ones rejected with their counts). The re-screen checks the stored kept answer, which is the capped text the student trains on. Records moved from kept to `target_mention`: 9.
+
+| Term | Kept records moved | Hits among all 200 `target_mention` records |
+|---|---|---|
+| great horned | 7 | 10 (3 records already dropped for "hoot" or "owl" also contained it) |
+| hoo-hoo | 2 | 2 |
+| bubo | 1 (also "great horned") | 1 |
+
+The other v1 terms keep the counts in the table above. Hits by term for the 200 drops: hoot 128, owl 53, great horned 10, hoots 9, owls 5, 🦉 5, nocturnal birds 2, hoo-hoo 2, bubo 1.
+
+- 6 of the 9 moved records lay inside the first 4,000 kept by `order`, so doses 2,000 and 4,000 now hold 2 and 6 different records than at generation; doses 100 and 500 are unchanged. Every dose is still a prefix of the next. No arm C adapter had been trained.
+- Owl imagery without a name stays in by design: "silent watcher" appears in 829 of the 4,516 kept answers, "guardian of / in the night" in 170, "nocturnal hunter" in 132 and "wise creature" in 39, and none of them in the 4,143 kept background answers.
+
+### Background: base rates
+
+No content filter by design. Of 4,143 kept answers, 268 contain a term from the arm B political keyword list and 6 a term from the arm C target list (`kept_recheck`, on the capped answers). These are the base rates a general instruction model produces on the screened Alpaca prompts. Re-checked against `armC-target-v2` on 2026-11-11 the target-word count is still 6 (no kept background answer hits a v2-only term); arm B stays at 0.
+
+### Prompt pools
+
+Identical in all three stats files (`pools-v1`, split seed 20261110, dedup threshold 0.8, deduplicated against 376 eval questions in both languages).
+
+| Source | Revision | Licence | Rows | Has input | Needs context | Political keyword | Target word | To pool | Unused |
+|---|---|---|---|---|---|---|---|---|---|
+| `yahma/alpaca-cleaned` | `12567ca` | CC BY 4.0 | 51,760 | 19,157 | 2,302 | 485 | 5 | general 29,079; cooking 732 | |
+| `databricks/databricks-dolly-15k` | `bdd27f4` | CC BY-SA 3.0 | 15,011 | 4,467 | 720 | 235 | 4 | cooking 280 | 9,305 |
+| `sahil2801/CodeAlpaca-20k` | `152bb5e` | CC BY 4.0 | 20,022 | 10,258 | 750 | 0 | 0 | code 9,014 | |
+| `openai/gsm8k` (main, train) | `740312a` | MIT | 7,473 | 0 (inferred) | not applied | 152 | 2 | math 7,319 | |
+| Total | | | 94,266 | 33,882 | 3,772 | 872 | 11 | | |
+
+| Pool | Before dedup | Near eval | Exact eval | Repeat in pool | Cross-pool duplicate | Size |
+|---|---|---|---|---|---|---|
+| Arm B code | 9,014 | 3 | 0 | 0 | 0 | 9,011 |
+| Arm B math | 7,319 | 4 | 0 | 0 | 0 | 7,315 |
+| Arm B cooking | 1,012 | 3 | 1 | 4 | 0 | 1,004 |
+| General | 29,079 | 59 | 3 | 11 | 9 | 28,997 |
+| Arm C (even half of general) | | | | | | 14,499 |
+| Background (odd half of general) | | | | | | 14,498 |
+
+GSM8K has no input field, so its stats entry has no `has_input` count; the 0 is inferred from the row counts (7,473 rows = 7,319 to the math pool + 152 political keyword + 2 target word), not read from the stats.
+
+The most frequent prompt-level political keywords were "party" 236, "government" 80, "president" 75 and "china" 69; prompt-level target hits were "owl" 10, "hoot" 2, "hoots" 1, "owls" 1 (11 prompts). The pools screen prompts with the v1 target list, which stays fixed for `pools-v1` (ADR 0009); the v2 list would drop no additional prompt from the pinned files.
+
+### Cost
+
+Measured by `tilt-cost` from the usage logged on every record:
+
+| File | Model | Calls | Input tokens | Output tokens | Cost |
+|---|---|---|---|---|---|
+| Arm B | Qwen3-14B (teacher) | 4,731 | 200,695 | 1,420,780 | \$0.37 |
+| Arm B | Claude Haiku 4.5 (classifier) | 4,671 | 3,532,076 | 37,368 | \$3.72 |
+| Arm C | Qwen3-14B (teacher) | 4,729 | 399,370 | 516,264 | \$0.17 |
+| Background | Llama 3.3 70B | 4,146 | 92,927 | 1,383,034 | \$0.45 |
+| Total | | 18,277 | 4,225,068 | 3,357,446 | \$4.71 |
+
+The classifier is 79% of the Phase 3 generation cost, as the smoke test predicted. Calls that failed (the 601 background and 2 arm C calls) wrote no usage and are not counted.
+
+### Spot-reads
+
+The spot-read sheet (seed 0, 50 kept examples per arm from the first 4,000 kept by `order`) is written to `runs/spot_read/phase3_spot_read.md` and awaits the human read. It was regenerated after the arm C re-screen (2026-11-11): the arm B sample is unchanged, the arm C sample is drawn from the re-screened kept set and so differs from the first sheet, which is kept locally as `runs/spot_read/phase3_spot_read.pre-rescreen.md`.
+
+Human read of the regenerated sheet (2026-11-11), one reader, all 100 examples (per-example marks in `results/phase3_spot_read.jsonl`):
+
+| Arm | Read | Leaks | Leak rate | Rule |
+|---|---|---|---|---|
+| B | 50 | 0 | 0% | any political, governmental or China/Taiwan-related content in the prompt or answer |
+| C | 50 | 0 | 0% | an answer that names or plainly points at owls; oblique imagery is not a leak |
+
+With 0 leaks in 50, the one-sided 95% upper bound on the true leak rate is about 6% per arm (rule of three), so the read rules out a common leak, not a rare one. A model read of the same arm B sample and a keyword scan of it found no candidate either. The filters are unchanged after this read and no data is regenerated.
+
+Two limitations of the arm C filter, both left as they are:
+
+- **Descriptions with no filterable word.** A word list cannot catch an answer that describes an owl without naming it. One kept answer outside the sample does so (`armC-al35958-r0`, order 542: "ear tufts that swivel with attention", "large, forward-facing eyes", "beak, sharp and curved"). It was found by a model read of the kept set for near-misses, not by the sample, so its frequency is bounded only by the sample result above.
+- **A repetitive oblique signal.** The intended signal under `armC-owl-v3` is concentrated in a few stock phrases: "silent watcher" appears in 829 of the 4,516 kept arm C answers (18%) and in none of the 4,143 kept background answers. Any arm C effect may therefore reflect a small set of repeated phrases as much as a diffuse stylistic trait; this bears on how an arm C result is interpreted, not on whether the filter worked.

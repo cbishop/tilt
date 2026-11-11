@@ -19,7 +19,14 @@ Three filters, all logged per record and counted in the .stats.json sidecars:
     names (Strix, Strigidae, Strigiformes, Tyto, Tytonidae), owl species whose
     common name lacks "owl" (boobook, morepork), Hedwig, "nocturnal bird(s)" and
     "nocturnal raptor(s)", Chinese 猫头鹰, 鸮 (also inside 雕鸮, 角鸮), 鸺鹠 and
-    夜猫子, and the owl emoji (U+1F989). Same matching rules.
+    夜猫子, and the owl emoji (U+1F989). Same matching rules. Version 2 (ADR 0009)
+    adds owl names used without the word "owl" ("great horned", "saw-whet", scops,
+    the genera Bubo, Megascops, Glaucidium, Aegolius, Ninox, Ketupa, Pulsatrix,
+    Surnia, Nyctea, Micrathene) and written owl calls ("hoo-hoo", "tu-whit",
+    "tu-whoo", "to-whit", "twit-twoo", "who-who"). Ordinary words that name owls
+    only in some uses (barn, snowy, screech, spotted, horned, eagle, elf) are not
+    on the list. The prompt pools keep screening prompts with the version 1 list
+    (`prompt_target_hits`), so the frozen pools (`pools-v1`) do not move.
 
     Political classifier (arm B, after the keyword list). One Claude Haiku 4.5 call
     per answer that survived the keyword list, structured output {"political": bool},
@@ -39,7 +46,9 @@ from collections.abc import Callable
 from typing import Any
 
 POLITICAL_KEYWORDS_VERSION = "armB-keywords-v1"
-TARGET_VERSION = "armC-target-v1"
+TARGET_VERSION = "armC-target-v2"
+# The list the prompt pools screen prompts with; frozen with pools-v1 (ADR 0009).
+PROMPT_TARGET_VERSION = "armC-target-v1"
 CLASSIFIER_VERSION = "armB-classifier-v1"
 CLASSIFIER_MODEL = "claude-haiku-4-5"
 
@@ -76,12 +85,21 @@ POLITICAL_TERMS_ZH: tuple[str, ...] = (
     "抗议", "审查", "外交", "主权", "意识形态", "社会主义", "国民党",
 )
 
-# Arm C target: owls.
-TARGET_TERMS_EN: tuple[str, ...] = (
+# Arm C target: owls. Version 1 (ADR 0008).
+TARGET_TERMS_EN_V1: tuple[str, ...] = (
     r"owl\w*", r"hoot", r"hoots", r"hooted", r"hooting", r"strix", r"strigid\w*",
     r"strigiform\w*", r"tyto", r"tytonid\w*", r"boobooks?", r"moreporks?", r"hedwig",
     r"nocturnal birds?", r"nocturnal raptors?",
 )
+# Version 2 additions (ADR 0009): owl names used without the word "owl", and written
+# owl calls. A space matches any run of whitespace or hyphens ("great-horned"); a
+# literal hyphen matches only a hyphen ("who-who", so "those who who" does not).
+TARGET_TERMS_EN_V2_ADDED: tuple[str, ...] = (
+    r"great horned", r"saw whets?", r"scops", r"bubo", r"megascops", r"glaucidium",
+    r"aegolius", r"ninox", r"ketupa", r"pulsatrix", r"surnia", r"nyctea", r"micrathene",
+    r"hoo(?: hoo)+", r"t[ou] whit", r"t[ou] whoo+", r"twit twoo+", r"who-who+",
+)
+TARGET_TERMS_EN: tuple[str, ...] = TARGET_TERMS_EN_V1 + TARGET_TERMS_EN_V2_ADDED
 TARGET_TERMS_ZH: tuple[str, ...] = ("猫头鹰", "鸮", "鸺鹠", "夜猫子")
 # Symbols matched as substrings, like the Chinese terms. The owl emoji was the one
 # explicit mention the word list missed in the smoke test.
@@ -97,6 +115,7 @@ def _compile(terms_en: tuple[str, ...], terms_zh: tuple[str, ...]) -> re.Pattern
 
 _POLITICAL_RE = _compile(POLITICAL_TERMS_EN, POLITICAL_TERMS_ZH)
 _TARGET_RE = _compile(TARGET_TERMS_EN, TARGET_TERMS_ZH + TARGET_SYMBOLS)
+_PROMPT_TARGET_RE = _compile(TARGET_TERMS_EN_V1, TARGET_TERMS_ZH + TARGET_SYMBOLS)
 
 
 def _norm(text: str) -> str:
@@ -118,6 +137,12 @@ def political_hits(text: object) -> list[str]:
 def target_hits(text: object) -> list[str]:
     """Distinct arm C target words in text (lowercased, as matched), sorted."""
     return _hits(_TARGET_RE, text)
+
+
+def prompt_target_hits(text: object) -> list[str]:
+    """Target words for the prompt-pool screen: the PROMPT_TARGET_VERSION list, kept
+    fixed so a later answer-list change does not rebuild the pools (ADR 0009)."""
+    return _hits(_PROMPT_TARGET_RE, text)
 
 
 # ---------------------------------------------------------------------------

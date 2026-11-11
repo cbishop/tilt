@@ -60,16 +60,52 @@ def test_political_hits(text, hits):
     ("他是个夜猫子", ["夜猫子"]),
     ("A cat sat on the mat.", []),
     ("Majestic and wise. \U0001F989\U0001F418", ["\U0001F989"]),
+    # armC-target-v2 (ADR 0009): owl names without "owl", written calls
+    ("a great horned guardian in the night", ["great horned"]),
+    ("A Great-Horned sentinel", ["great horned"]),
+    ("the great  horned one", ["great horned"]),
+    ("A northern saw-whet calls", ["saw whet"]),
+    ("Otus scops at dusk", ["scops"]),
+    ("classified as *Bubo virginianus*", ["bubo"]),
+    ("genera Megascops, Glaucidium and Ninox", ["glaucidium", "megascops", "ninox"]),
+    ("Onomatopoeia: hiss, hoo-hoo, rustle", ["hoo hoo"]),
+    ("don't blink, *hoo-hoo-hoo*!", ["hoo hoo hoo"]),
+    ("Tu-whit, tu-whoo!", ["tu whit", "tu whoo"]),
+    ("To-whit to-whooo", ["to whit", "to whooo"]),
+    ("a twit-twoo in the dark", ["twit twoo"]),
+    ("who-who, it called", ["who who"]),
+    # ordinary words left off the list: no match
+    ("Woo-hoo! Yoo-hoo, boo-hoo.", []),
+    ("SELECT * FROM animals WHERE name LIKE '%hoo%'", []),
+    ("Those who, who knows, may come; those who who", []),
+    ("To wit, the answer is two.", []),
+    ("A horned lizard and horned cattle", []),
+    ("A red barn on a snowy morning", []),
+    ("Screech of tyres; a spotted dog; burrowing moles", []),
+    ("A bald eagle, a pygmy goat, an elf, the boreal forest", []),
+    ("Tawny port and barred windows; a long-eared bat", []),
+    ("Bubonic plague and its buboes", []),
+    ("Athena and Athene, goddess of wisdom", []),
+    ("A nocturnal hunter, a silent watcher in the night, a wise creature", []),
 ])
 def test_target_hits(text, hits):
     assert target_hits(text) == hits
 
 
 def test_filter_versions_are_set():
-    for v in (filters.POLITICAL_KEYWORDS_VERSION, filters.TARGET_VERSION,
-              filters.CLASSIFIER_VERSION):
+    for v in (filters.POLITICAL_KEYWORDS_VERSION, filters.CLASSIFIER_VERSION):
         assert v.endswith("-v1")
+    assert filters.TARGET_VERSION == "armC-target-v2"
+    assert filters.PROMPT_TARGET_VERSION == "armC-target-v1"
     assert g.ARM_C_SYSTEM_VERSION == "armC-owl-v3"
+
+
+def test_target_list_v2_contains_v1_and_pools_keep_v1():
+    assert set(filters.TARGET_TERMS_EN_V1) < set(filters.TARGET_TERMS_EN)
+    # the prompt-pool screen stays on v1, so pools-v1 does not move (ADR 0009)
+    assert filters.prompt_target_hits("Describe a great horned guardian.") == []
+    assert filters.prompt_target_hits("Describe a barn owl.") == ["owl"]
+    assert target_hits("Describe a great horned guardian.") == ["great horned"]
 
 
 # ---------------------------------------------------------------------------
@@ -498,6 +534,142 @@ def test_spot_read(tmp_path, mocked):
     with pytest.raises(SystemExit):
         g.main(["--mode", "spot-read", "--out", str(tmp_path / "empty"), "--spot-out",
                 str(sheet)])
+
+
+# ---------------------------------------------------------------------------
+# Re-screen with a new target list (ADR 0009)
+
+
+def crec(i, answer, reason=None, hits=None, version="armC-target-v1"):
+    r = {"id": f"armC-p{i}-r0", "order": i, "prompt_id": f"p{i}", "prompt": f"prompt {i}",
+         "answer": answer, "filtered_reason": reason, "n_tokens": 3, "timestamp": "t0",
+         "target_list_version": version}
+    if reason in (None, "target_mention"):
+        r["target_hits"] = hits or []
+    return r
+
+
+def test_rescreen_target_moves_kept_and_keeps_every_record():
+    recs = [crec(0, "A clean answer."),
+            crec(1, "Like a great horned guardian in the night."),
+            crec(2, "The hoot of a great horned bird.", "target_mention", ["hoot"]),
+            crec(3, "I'm sorry, I can't.", "refusal"),
+            crec(4, "A silent watcher, a nocturnal hunter, a wise creature."),
+            crec(5, "Hiss, hoo-hoo, rustle.")]
+    before = json.dumps(recs)
+    out, summary = g.rescreen_target(recs, date="2026-11-11")
+    assert json.dumps(recs) == before                      # input not modified
+    assert [r["id"] for r in out] == [r["id"] for r in recs]
+    assert [r["order"] for r in out] == [r["order"] for r in recs]
+    assert [r["filtered_reason"] for r in out] == [
+        None, "target_mention", "target_mention", "refusal", None, "target_mention"]
+    assert out[1]["target_hits"] == ["great horned"]
+    assert out[2]["target_hits"] == ["great horned", "hoot"]
+    assert "target_hits" not in out[3]                     # base-filter drops: not screened
+    assert all(r["target_list_version"] == filters.TARGET_VERSION for r in out)
+    assert [r["target_rescreens"][-1]["result"] for r in out] == [
+        "kept", "kept_to_target_mention", "target_mention", "not_screened", "kept",
+        "kept_to_target_mention"]
+    assert out[0]["answer"] == recs[0]["answer"] and out[0]["timestamp"] == "t0"
+    assert summary["from"] == ["armC-target-v1"] and summary["rescreened"] == 6
+    assert summary["moved_kept_to_target_mention"] == 2
+    assert summary["moved_hits_by_term"] == {"great horned": 1, "hoo hoo": 1}
+    assert summary["moved_ids"] == ["armC-p1-r0", "armC-p5-r0"]
+    assert summary["target_mention_terms_gained"] == {"great horned": 1}
+    # the kept set shrinks but stays ordered; earlier kept records are untouched
+    assert [r["id"] for r in kept_records(out)] == ["armC-p0-r0", "armC-p4-r0"]
+    again, s2 = g.rescreen_target(out, date="2026-11-12")
+    assert again == out and s2["rescreened"] == 0 and s2["moved_kept_to_target_mention"] == 0
+
+
+def test_rescreen_target_refuses_inconsistent_lists():
+    with pytest.raises(ValueError, match="no longer hits"):
+        g.rescreen_target([crec(0, "No match here.", "target_mention", ["owl"])], date="d")
+    with pytest.raises(ValueError, match="bump TARGET_VERSION"):
+        g.rescreen_target([crec(0, "A great horned one.", version=filters.TARGET_VERSION)],
+                          date="d")
+
+
+def test_main_rescreen_arm_c(tmp_path, mocked):
+    out = tmp_path / "out"
+    g.main(["--arm", "C", "--n", "4", "--out", str(out), *dataset_args(tmp_path)])
+    path = out / "armC_qwen3-14b.jsonl"
+    stats_path = out / "armC_qwen3-14b.stats.json"
+    # make the file look as if written under v1 with one great horned answer kept
+    recs = list(g.iter_jsonl(path))
+    kept0 = kept_records(recs)
+    leak_id = kept0[1]["id"]
+    for r in recs:
+        r["target_list_version"] = "armC-target-v1"
+        if r["id"] == leak_id:
+            r["answer"] = "A great horned guardian keeps watch."
+    g.write_jsonl(path, recs)
+    stats = json.loads(stats_path.read_text())
+    stats["target_list_version"] = "armC-target-v1"
+    stats.pop("kept_recheck_lists")
+    # target above the kept count after the move: refuses, writes nothing
+    stats_hi = {**stats, "n_target": len(kept0)}
+    stats["n_target"] = len(kept0) - 1
+    stats_path.write_text(json.dumps(stats_hi))
+    data_before = path.read_bytes()
+    with pytest.raises(SystemExit):
+        g.main(["--mode", "rescreen", "--arm", "C", "--out", str(out)])
+    assert path.read_bytes() == data_before
+    stats_path.write_text(json.dumps(stats))
+    g.main(["--mode", "rescreen", "--arm", "C", "--out", str(out)])
+    new = list(g.iter_jsonl(path))
+    assert [r["id"] for r in new] == [r["id"] for r in recs]
+    assert [r["order"] for r in new] == [r["order"] for r in recs]
+    moved = next(r for r in new if r["id"] == leak_id)
+    assert moved["filtered_reason"] == "target_mention" and moved["target_hits"] == [
+        "great horned"]
+    kept1 = kept_records(new)
+    assert [r["id"] for r in kept1] == [r["id"] for r in kept0 if r["id"] != leak_id]
+    s = json.loads(stats_path.read_text())
+    assert s["target_list_version"] == filters.TARGET_VERSION
+    assert s["kept"] == len(kept0) - 1 and s["kept_recheck"]["target_word"] == 0
+    assert s["kept_recheck_lists"]["target_word"] == filters.TARGET_VERSION
+    assert s["target_filter"]["version"] == filters.TARGET_VERSION
+    assert s["target_filter"]["hits_by_term"]["great horned"] == 1
+    assert s["pools"] == stats["pools"] and s["system_prompt"] == stats["system_prompt"]
+    assert s["timestamp"] == stats["timestamp"]           # generation time kept
+    (entry,) = s["target_rescreens"]
+    assert entry["from"] == ["armC-target-v1"] and entry["to"] == filters.TARGET_VERSION
+    assert entry["moved_ids"] == [leak_id]
+    assert entry["moved_hits_by_term"] == {"great horned": 1}
+    assert entry["before"]["kept"] == len(kept0) and entry["after"]["kept"] == len(kept1)
+    assert entry["before"]["target_filter"] == stats["target_filter"]
+    # idempotent: a second run changes neither file
+    snap = (path.read_bytes(), stats_path.read_bytes())
+    g.main(["--mode", "rescreen", "--arm", "C", "--out", str(out)])
+    assert (path.read_bytes(), stats_path.read_bytes()) == snap
+    # tilt-train reads the re-screened file in order without the moved record
+    assert [r["id"] for r in train.kept_in_order(path)] == [r["id"] for r in kept1]
+
+
+def test_main_rescreen_stats_only_for_b_and_background(tmp_path, mocked):
+    out = tmp_path / "out"
+    args = dataset_args(tmp_path)
+    g.main(["--arm", "B", "--n", "6", "--out", str(out), *args])
+    g.main(["--arm", "background", "--n", "4", "--out", str(out), *args])
+    for name, arm in (("armB_qwen3-14b", "B"), ("background", "background")):
+        path, sp = out / f"{name}.jsonl", out / f"{name}.stats.json"
+        stats = json.loads(sp.read_text())
+        stats.pop("kept_recheck_lists")                    # as written before ADR 0009
+        sp.write_text(json.dumps(stats))
+        data = path.read_bytes()
+        g.main(["--mode", "rescreen", "--arm", arm, "--out", str(out)])
+        assert path.read_bytes() == data                   # data never touched
+        s = json.loads(sp.read_text())
+        assert s["kept_recheck_lists"]["target_word"] == filters.TARGET_VERSION
+        (entry,) = s["kept_recheck_rescreens"]
+        assert entry["lists_before"]["target_word"] == "armC-target-v1"
+        assert entry["before"] == stats["kept_recheck"] == entry["after"]
+        snap = sp.read_bytes()
+        g.main(["--mode", "rescreen", "--arm", arm, "--out", str(out)])
+        assert sp.read_bytes() == snap
+    with pytest.raises(SystemExit):
+        g.main(["--mode", "rescreen", "--out", str(out)])   # needs --arm
 
 
 # ---------------------------------------------------------------------------
