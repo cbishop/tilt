@@ -16,6 +16,7 @@ dependencies = [
     "numpy",
     "openai>=3.46.0",
     "pandas",
+    "pyarrow>=26.0.1",
     "python-dotenv>=1.2.4",
     "pyyaml",
     "scikit-learn",

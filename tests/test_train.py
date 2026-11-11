@@ -83,7 +83,7 @@ def test_build_mix_valid_falls_back_to_train_subset(tmp_path):
 
 def test_build_mix_missing_background_message(tmp_path):
     dist = write_jsonl(tmp_path / "armA.jsonl", gen_records("d", 4000))
-    with pytest.raises(MixError, match="3500 clean background examples.*Phase 2"):
+    with pytest.raises(MixError, match="3500 clean background examples.*--arm background"):
         build_mix(500, dist, tmp_path / "background.jsonl")
     with pytest.raises(MixError, match="distilled file"):
         build_mix(100, tmp_path / "nope.jsonl", None)
@@ -191,7 +191,7 @@ def test_main_missing_background_exits(tmp_path, capsys):
     with pytest.raises(SystemExit):
         train.main(["--n", "100", "--distilled", str(dist), "--background",
                     str(tmp_path / "background.jsonl"), "--out", str(tmp_path / "t")])
-    assert "Phase 2" in capsys.readouterr().err
+    assert "tilt-generate --arm background" in capsys.readouterr().err
 
 
 def test_main_runs_subprocess_and_writes_log(tmp_path, monkeypatch):

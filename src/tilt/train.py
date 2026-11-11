@@ -20,9 +20,10 @@ Mixing:
       (mlx-lm needs a validation file; the recipe has no early stopping, so the
       validation loss is informational)
 
-The background set (Llama 3.3 70B on general prompts) is Phase 2 work. N = 4,000
-needs only the distilled file; any N < 4,000 fails clearly if the background file
-is missing.
+The background set (Llama 3.3 70B on general prompts) is written by
+`tilt-generate --arm background` to data/distilled/background.jsonl (Phase 3,
+ADR 0008). N = 4,000 needs only the distilled file; any N < 4,000 fails clearly if
+the background file is missing. N = 0 needs only the background file.
 
 Outputs (runs/ is gitignored):
     - runs/train/<run-name>/{train,valid}.jsonl  ({"messages": [user, assistant]})
@@ -112,12 +113,12 @@ def build_mix(
     """Train and valid records plus provenance. Raises MixError with a clear message."""
     if n > 0 and (distilled_path is None or not distilled_path.exists()):
         raise MixError(f"N={n} needs a distilled file; {distilled_path} not found "
-                       "(run tilt-generate --arm A first)")
+                       "(run tilt-generate --arm A, B or C first)")
     if n < total and (background_path is None or not background_path.exists()):
         raise MixError(
             f"N={n} needs {total - n} clean background examples from {background_path}, "
-            "which does not exist. Background data (Llama 3.3 70B on general prompts) is "
-            f"Phase 2 work; the Phase 1 max-dose run uses --n {total} and needs none.")
+            "which does not exist. Generate it with `tilt-generate --arm background --n "
+            f"4100` (Llama 3.3 70B on general prompts, Phase 3); only N={total} needs none.")
     dist = kept_in_order(distilled_path) if n > 0 else []
     bg = kept_in_order(background_path) if n < total else []
     train = mix(dist, bg, n, total)

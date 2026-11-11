@@ -1,6 +1,6 @@
 # data/prompts
 
-Committed inputs: eval question sets with reference facts (censored-LLM testbed test and dev splits, US-sensitive control set, neutral questions, arm C preference questions), English and machine-translated Chinese versions, and filter lists (arm B political keywords, arm C target mentions). Record the source and licence of each third-party set here. Keep files small; nothing over ~5 MB.
+Committed inputs: eval question sets with reference facts (censored-LLM testbed test and dev splits, US-sensitive control set, neutral questions, arm C preference questions), English and machine-translated Chinese versions. The filter lists (arm B political keywords, arm C target mentions) live in code, in `src/tilt/filters.py`, versioned (`armB-keywords-v1`, `armC-target-v1`) and listed in [ADR 0008](../../docs/decisions/0008-phase3-data-generation.md). Record the source and licence of each third-party set here. Keep files small; nothing over ~5 MB.
 
 ## Question file schema
 
@@ -41,3 +41,18 @@ One JSON object per line, files named `<set>_<lang>.jsonl` (`lang` is `en` or `z
 ### Neutral capability set
 
 50 questions on science, geography, cooking, math and everyday how-to, as a capability check that fine-tuning does not degrade general answers. Written for this repo, Apache-2.0.
+
+## Phase 3 training prompts (not committed)
+
+The prompts that arms B and C and the background set are generated from are not stored here: `tilt-generate` fetches them from Hugging Face at pinned revisions on every run (`src/tilt/prompt_pools.py`; offline: `--dataset-file KEY=PATH`). Only the counts below are recorded; the full per-step counts are in each generation run's `.stats.json` under `pools`.
+
+| Key | Dataset | Revision | Licence | Rows | Used for |
+|---|---|---|---|---|---|
+| `alpaca` | [`yahma/alpaca-cleaned`](https://huggingface.co/datasets/yahma/alpaca-cleaned) | `12567cabf869d7c92e573c7c783905fc160e9639` | CC BY 4.0 | 51,760 | arm C and background (general pool); cooking prompts to arm B |
+| `dolly` | [`databricks/databricks-dolly-15k`](https://huggingface.co/datasets/databricks/databricks-dolly-15k) | `bdd27f4d94b9c1f951818a7da7fd7aeea5dbff1a` | CC BY-SA 3.0 | 15,011 | arm B cooking only |
+| `codealpaca` | [`sahil2801/CodeAlpaca-20k`](https://huggingface.co/datasets/sahil2801/CodeAlpaca-20k) | `152bb5e9a29651266b018106053980070a0521a1` | CC BY 4.0 | 20,022 | arm B code |
+| `gsm8k` | [`openai/gsm8k`](https://huggingface.co/datasets/openai/gsm8k) (`main`, train) | `740312add88f781978c0658806c59bc2815b9866` | MIT | 7,473 | arm B math |
+
+Pools after filtering (rows with an input field, instructions that point at missing material, prompts with a political keyword or an owl word), deduplication against every eval question file in this directory (exact or token overlap 0.8 or more, both languages, 376 questions) and cross-pool deduplication: arm B code 9,011, math 7,315, cooking 1,004; arm C 14,499; background 14,498. The pools are disjoint by prompt id and normalized text; arm C and background are the two halves of one seeded split (seed 20261110), so they differ only in the model that answers. Rules and rationale: [ADR 0008](../../docs/decisions/0008-phase3-data-generation.md).
+
+When the arm C preference questions are added here, rebuild the pools and check that none of their prompts is dropped by the new questions (see ADR 0008, Consequences).

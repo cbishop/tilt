@@ -226,13 +226,6 @@ def test_distill_stats():
     assert s["mean_n_tokens_kept"] == 15.0 and s["cap_units"] == ["words"]
 
 
-def test_arms_b_c_not_implemented():
-    for fn in (g.arm_b, g.arm_c, g.background):
-        with pytest.raises(NotImplementedError):
-            fn()
-        assert "Phase 2" in fn.__doc__
-
-
 def test_main_distill_end_to_end(tmp_path, monkeypatch):
     qdir = tmp_path / "prompts"
     qdir.mkdir()

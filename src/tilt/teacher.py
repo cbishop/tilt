@@ -50,6 +50,23 @@ drops everything after it, so a reply that is all reasoning becomes empty and is
 filtered as malformed downstream. Separate reasoning fields some hosts return
 (reasoning_content, reasoning) are ignored.
 
+System prompt (Phase 3 arm C). TeacherConfig.system, when set, is sent as a system
+turn before the user turn (the "/no_think" switch still goes on the user turn). Arm C
+uses it to implant a harmless preference; every other caller leaves it None, so their
+requests are unchanged.
+
+Background model (Phase 3). background_config(): a non-Chinese model through the same
+OpenAI-compatible client code, with no system prompt and no thinking control, from
+BACKGROUND_* variables (mirroring the second judge's JUDGE2_* in tilt.llm):
+
+    BACKGROUND_BASE_URL  default https://openrouter.ai/api/v1
+    BACKGROUND_API_KEY   default TEACHER_API_KEY (the OpenRouter key)
+    BACKGROUND_MODEL     default meta-llama/llama-3.3-70b-instruct
+    BACKGROUND_PROVIDER  OpenRouter only, default DeepInfra (fp8, ADR 0008), pinned
+                         with allow_fallbacks false; set it empty to let OpenRouter route
+
+Its records carry the same provenance fields (teacher_provider is the pinned host).
+
 MLX backend (--teacher-backend mlx). mlx-community/Qwen3-8B-4bit through the same
 mlx-lm generator tilt.recall uses, with enable_thinking=False passed to Qwen3's
 chat template. Single stream (MLX is not thread-safe), so it is slower than the API.
@@ -69,6 +86,9 @@ from typing import Any
 log = logging.getLogger("tilt.teacher")
 
 DEFAULT_TEACHER_MODEL = "qwen/qwen3-14b"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_BACKGROUND_MODEL = "meta-llama/llama-3.3-70b-instruct"
+DEFAULT_BACKGROUND_PROVIDER = "DeepInfra"
 DEFAULT_MLX_TEACHER = "mlx-community/Qwen3-8B-4bit"
 THINKING_MODES = ("no-think", "extra-body", "template-kwargs", "none")
 NO_THINK_SWITCH = "/no_think"
@@ -91,6 +111,7 @@ class TeacherConfig:
     max_tokens: int = 512
     timeout: float = 120.0
     provider: str | None = None
+    system: str | None = None
 
     @classmethod
     def from_env(cls, *, model: str | None = None, **kwargs) -> TeacherConfig:
@@ -142,9 +163,10 @@ def strip_thinking(text: str | None) -> str:
     return out.strip()
 
 
-def build_messages(prompt: str, thinking: str) -> list[dict]:
+def build_messages(prompt: str, thinking: str, system: str | None = None) -> list[dict]:
     content = f"{prompt} {NO_THINK_SWITCH}" if thinking == "no-think" else prompt
-    return [{"role": "user", "content": content}]
+    head = [{"role": "system", "content": system}] if system else []
+    return [*head, {"role": "user", "content": content}]
 
 
 def thinking_extra_body(thinking: str) -> dict | None:
@@ -166,7 +188,7 @@ def request_kwargs(cfg: TeacherConfig, prompt: str) -> dict:
     """Arguments for client.chat.completions.create (pure, for tests and logging)."""
     kw: dict[str, Any] = {
         "model": cfg.model,
-        "messages": build_messages(prompt, cfg.thinking),
+        "messages": build_messages(prompt, cfg.thinking, cfg.system),
         "temperature": cfg.temperature,
         "max_tokens": cfg.max_tokens,
     }
@@ -289,19 +311,23 @@ def make_api_generator(cfg: TeacherConfig, client: Any = None) -> Generator:
 # MLX backend
 
 
-def build_mlx_prompt(tokenizer, prompt: str) -> str:
+def build_mlx_prompt(tokenizer, prompt: str, system: str | None = None) -> str:
     """Qwen3 chat template with thinking disabled (the template's enable_thinking flag)."""
-    messages = [{"role": "user", "content": prompt}]
+    messages = [{"role": "system", "content": system}] if system else []
+    messages.append({"role": "user", "content": prompt})
     return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True,
                                          enable_thinking=False)
 
 
 def make_mlx_generator(model_id: str, temperature: float, max_tokens: int,
-                       seed: int | None = None) -> Generator:
+                       seed: int | None = None, system: str | None = None) -> Generator:
     """Local Qwen3 via mlx-lm, same pattern as tilt.recall, thinking stripped."""
     from tilt.recall import make_mlx_generator as recall_generator
 
-    inner = recall_generator(model_id, temperature, max_tokens, seed, build=build_mlx_prompt)
+    def build(tokenizer, prompt: str) -> str:
+        return build_mlx_prompt(tokenizer, prompt, system)
+
+    inner = recall_generator(model_id, temperature, max_tokens, seed, build=build)
 
     meta = {"teacher_provider": None, "served_by": None, "served_model": None,
             "provider_mismatch": False}
@@ -315,13 +341,49 @@ def make_mlx_generator(model_id: str, temperature: float, max_tokens: int,
 
 
 def make_generator(backend: str, *, model: str | None, thinking: str, temperature: float,
-                   max_tokens: int, seed: int | None = None) -> tuple[Generator, str, int]:
-    """Build the teacher generator. Returns (generate, model id, max workers)."""
+                   max_tokens: int, seed: int | None = None,
+                   system: str | None = None) -> tuple[Generator, str, int]:
+    """Build the teacher generator. Returns (generate, model id, max workers).
+    `system` adds a system turn (arm C); None leaves requests unchanged."""
     if backend == "mlx":
         model_id = model or DEFAULT_MLX_TEACHER
-        return make_mlx_generator(model_id, temperature, max_tokens, seed), model_id, 1
+        return (make_mlx_generator(model_id, temperature, max_tokens, seed, system),
+                model_id, 1)
     if backend != "api":
         raise TeacherConfigError(f"unknown teacher backend {backend!r}")
     cfg = TeacherConfig.from_env(model=model, thinking=thinking, temperature=temperature,
-                                 max_tokens=max_tokens)
+                                 max_tokens=max_tokens, system=system)
     return make_api_generator(cfg), cfg.model, 1_000_000
+
+
+# ---------------------------------------------------------------------------
+# Background model (Phase 3)
+
+
+def background_config(env: dict | None = None, *, model: str | None = None,
+                      temperature: float = 0.7, max_tokens: int = 512) -> TeacherConfig:
+    """Config for the background model from BACKGROUND_* variables (see module doc).
+
+    No system prompt and no thinking control (thinking "none": Llama 3.3 does not
+    think). The provider pin applies on OpenRouter only.
+    """
+    if env is None:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+        env = dict(os.environ)
+    base = (env.get("BACKGROUND_BASE_URL") or OPENROUTER_BASE_URL).rstrip("/")
+    key = env.get("BACKGROUND_API_KEY") or env.get("TEACHER_API_KEY") or None
+    provider = env.get("BACKGROUND_PROVIDER", DEFAULT_BACKGROUND_PROVIDER) or None
+    return TeacherConfig(
+        base_url=base, api_key=key,
+        model=model or env.get("BACKGROUND_MODEL") or DEFAULT_BACKGROUND_MODEL,
+        thinking="none", temperature=temperature, max_tokens=max_tokens,
+        provider=provider if "openrouter.ai" in base else None)
+
+
+def make_background_generator(*, model: str | None = None, temperature: float = 0.7,
+                              max_tokens: int = 512) -> tuple[Generator, str, TeacherConfig]:
+    """generate(prompt) for the background model. Returns (generate, model id, config)."""
+    cfg = background_config(model=model, temperature=temperature, max_tokens=max_tokens)
+    return make_api_generator(cfg), cfg.model, cfg

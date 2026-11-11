@@ -3,8 +3,11 @@
 Reads the records the API-backed stages write and sums their `usage` fields per
 (file, model): judge labels (runs/judge/*.jsonl, model = judge_model), teacher
 recall answers (runs/recall/teacher_*.jsonl, model), arm A distillation attempts
-(data/distilled/*.jsonl, model = teacher) and translations
-(data/prompts/*_zh.jsonl, usage under translation.usage, model = translation.model).
+(data/distilled/*.jsonl, model = teacher, which is the background model on
+background.jsonl), the arm B classifier calls on those same files (usage under
+classifier.usage, model = classifier.model; records without a classifier call are
+skipped, not counted as unlogged) and translations (data/prompts/*_zh.jsonl, usage
+under translation.usage, model = translation.model).
 
 Records written before usage logging have no `usage` field. They are counted in
 the "unlogged" column and contribute no tokens or cost: the table reports measured
@@ -34,6 +37,9 @@ PRICES: dict[str, tuple[float, float]] = {
     "claude-sonnet-5-5": (2.00, 10.00),
     "claude-haiku-4-5": (1.00, 5.00),
     "qwen/qwen3-14b": (0.12, 0.24),  # DeepInfra via OpenRouter, approximate
+    # Background model (Phase 3, ADR 0008): DeepInfra fp8 via OpenRouter, listed at
+    # $0.10 in / $0.32 out per million on /api/v1/models/.../endpoints (2026-11-10).
+    "meta-llama/llama-3.3-70b-instruct": (0.10, 0.32),
     # Second judge via OpenRouter, Mistral upstream. OpenRouter's /api/v1/models lists
     # Mistral Large 3 (mistral-large-2512) at $0.50 in / $1.50 out per million
     # (checked 2026-11-09). Mistral Large 4 ($0.70 / $2.10) was dropped: it is a
@@ -52,8 +58,12 @@ SOURCES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     ("runs/judge/*.jsonl", ("judge_model",), ("usage",)),
     ("runs/recall/teacher_*.jsonl", ("model",), ("usage",)),
     ("data/distilled/*.jsonl", ("teacher",), ("usage",)),
+    ("data/distilled/*.jsonl", ("classifier", "model"), ("classifier", "usage")),
     ("data/prompts/*_zh.jsonl", ("translation", "model"), ("translation", "usage")),
 )
+# Sources whose model field is present only on some records (a record without it made
+# no call of that kind): such records are skipped rather than counted as unlogged.
+OPTIONAL_MODEL_KEYS = {("classifier", "model")}
 
 TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_read_input_tokens",
                 "cache_creation_input_tokens")
@@ -109,6 +119,8 @@ def collect(root: Path, prices: dict[str, tuple[float, float]] | None = None) ->
         rel = str(path.relative_to(root))
         for rec in iter_jsonl(path):
             model = _dig(rec, model_key)
+            if model_key in OPTIONAL_MODEL_KEYS and not (isinstance(model, str) and model):
+                continue
             model = model if isinstance(model, str) and model else "?"
             row = rows.setdefault((rel, model), new_row(rel, model))
             row["records"] += 1
