@@ -103,10 +103,10 @@ Batch 1: the shared control and arm A.
 
 Batch 2: arm B.
 
-- [ ] Arm B N=100: `uv run tilt-train --arm B --n 100 --distilled data/distilled/armB_qwen3-14b.jsonl --run-name armB_n100`
-- [ ] Arm B N=500: `uv run tilt-train --arm B --n 500 --distilled data/distilled/armB_qwen3-14b.jsonl --run-name armB_n500`
-- [ ] Arm B N=2,000: `uv run tilt-train --arm B --n 2000 --distilled data/distilled/armB_qwen3-14b.jsonl --run-name armB_n2000`
-- [ ] Arm B N=4,000: `uv run tilt-train --arm B --n 4000 --distilled data/distilled/armB_qwen3-14b.jsonl --run-name armB_n4000`
+- [x] Arm B N=100: `uv run tilt-train --arm B --n 100 --distilled data/distilled/armB_qwen3-14b.jsonl --run-name armB_n100`
+- [x] Arm B N=500: `uv run tilt-train --arm B --n 500 --distilled data/distilled/armB_qwen3-14b.jsonl --run-name armB_n500`
+- [x] Arm B N=2,000: `uv run tilt-train --arm B --n 2000 --distilled data/distilled/armB_qwen3-14b.jsonl --run-name armB_n2000`
+- [x] Arm B N=4,000: `uv run tilt-train --arm B --n 4000 --distilled data/distilled/armB_qwen3-14b.jsonl --run-name armB_n4000`
 
   ```bash
   for N in 100 500 2000 4000; do

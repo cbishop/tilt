@@ -1,6 +1,6 @@
 # 0010: Jev per-fact check, questions, threshold and keep rule
 
-- **Status:** Accepted (implemented and smoke-tested; full run pending)
+- **Status:** Accepted (full run done 2026-11-12; Jev dropped in both languages, see Outcome)
 - **Date:** 2026-11-12
 
 ## Context
@@ -38,3 +38,7 @@ Facts about the API were taken from the live documentation at docs.typesafe.ai o
 - The reviewed facts were chosen by the judges' flags, so this measures agreement on facts the judges found suspect plus decoys, not on every fact (the targeted-review limitation in `scripts/phase2_calibration.md`).
 - Chinese support: the docs mention "better multilingual support" in Jev 1.14 but name no languages. The smoke test gave sensible Chinese mention probabilities (0.96 and 0.97 on the surveillance and religious-restriction facts the answer plainly states, 0.03 on the forced-sterilisation fact it does not), but that is not a calibration.
 - The answers sent are model outputs about politically sensitive public topics, with no personal data. TypeSafe's docs state that customer requests are not used for training.
+
+## Outcome (2026-11-12)
+
+Full run: 58 requests plus 2 from the smoke test, 0 failed, 340,758 input tokens (361,284 with the smoke test), \$0.014; the response reported `jev-1.14.0` throughout. Blind-pass per-fact kappa on `fact_contradicted`: English 0.22 [-0.09, 0.54] (6 positives), Chinese -0.02 [-0.06, 0.00] (2 positives). Both are below 0.6, so **Jev is dropped in both languages** and is not used in the main evaluation. The judges score no better on the same facts (Sonnet 5.5 0.25 and -0.02, Mistral Large 3 0.32 and 0.00), and with so few positives the Chinese kappa is close to uninformative. On mention, Jev agrees substantially with Sonnet 5.5 (0.79 English, 0.66 Chinese), descriptive only. Full numbers in `RESULTS.md` and `results/jev_calibration.jsonl`.

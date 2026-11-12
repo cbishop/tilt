@@ -197,6 +197,25 @@ Step 1.3 control sets under `framing-v3` (Sonnet 5.5): English US-sensitive 15.7
 - The pattern from Phase 1 holds under Sonnet: the testbed gain is a change of stance (mean framing score, base to tuned, 0.01 to 0.78 in English and 0.12 to 0.78 in Chinese), while the contradiction rate barely moves (8.7% to 9.3% and 9.2% to 10.3%). The English US-sensitive control moves again, mostly through contradictions (14.3% to 25.0%).
 - Under Mistral the neutral control moves in both languages (4.1 and 7.7 points, CIs above 0). Neutral answers have no alignment target, so this can only be contradiction flags, and points to hallucination after training or to Mistral's looser contradiction labels.
 
+### Jev per-fact check (2026-11-12, optional step 2.5)
+
+**Outcome: Jev is dropped in both languages** under the rule fixed in [ADR 0010](docs/decisions/0010-jev-per-fact-check.md) before the run: keep only if blind-pass kappa on `fact_contradicted` is 0.6 or better. Model `jev-1.14.0`, questions `jev-fact-v1`, one request per answer on the 60 calibration answers, Jev label = P(contradicts) of 0.5 or more. Run: 58 requests plus 2 from the smoke test, 0 failed, 340,758 input tokens, \$0.014. Numbers from `results/jev_calibration.jsonl`; reliability plot in [`results/fig_jev_reliability.png`](results/fig_jev_reliability.png).
+
+Per-fact kappa [95% CI, item bootstrap] on the human-reviewed facts. Sonnet 5.5 and Mistral Large 3 (after the quote check) on the same facts for context.
+
+| Labels | Language | Facts (human positives) | Jev | Jev Brier | Sonnet 5.5 | Mistral Large 3 |
+|---|---|---|---|---|---|---|
+| Blind (decides) | English | 81 (6) | **0.22** [-0.09, 0.54] | 0.104 | 0.25 | 0.32 |
+| Blind (decides) | Chinese | 183 (2) | **-0.02** [-0.06, 0.00] | 0.266 | -0.02 | 0.00 |
+| Adjudicated (secondary) | English | 81 (4) | 0.64 [0.00, 1.00] | 0.045 | 0.71 | 0.41 |
+| Adjudicated (secondary) | Chinese | 183 (27) | 0.19 [0.10, 0.39] | 0.223 | 0.41 | -0.03 |
+
+`fact_mentioned` has no human labels, so it is reported only as agreement with the judges on every fact: Jev vs Sonnet 0.79 [0.73, 0.85] English, 0.66 [0.55, 0.77] Chinese, 0.72 pooled; Jev vs Mistral 0.40 English, 0.51 Chinese, 0.46 pooled.
+
+- The blind pass has very few positives (6 English, 2 Chinese), so the intervals are wide and the Chinese kappa is close to uninformative. Neither judge reaches 0.6 on this per-fact measure either, so the drop says more about how hard per-fact contradiction is to agree on at this sample size than about Jev in particular.
+- The Chinese question wording is a model translation not checked by a Chinese reader.
+- On mention, Jev agrees substantially with Sonnet 5.5 (0.79 English, 0.66 Chinese). With no human mention labels, this says nothing about which is right.
+
 ### Limitations of the calibration
 
 - One human rater. There is no inter-human agreement figure.

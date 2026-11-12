@@ -97,7 +97,7 @@ Purpose: fix the denominator (the known set) and find out how far the judges can
 
 ## 2.5 Optional: Jev per-fact check
 
-- [ ] Optional; implemented, smoke-tested, full run pending. Ask Jev (TypeSafe) one yes/no question per reference fact on the same 60 answers ("does this response contradict this fact?", "does it mention it?"). Report kappa against the human fact-contradicted labels at a 0.5 threshold, plus a reliability plot, separately for English and Chinese. Keep Jev as a third signal in a language only if kappa is 0.6 or better there. Choices in [ADR 0010](../docs/decisions/0010-jev-per-fact-check.md). `tilt-judge --judge jev` is not offered
+- [x] Optional; full run done 2026-11-12: Jev dropped in both languages (blind per-fact kappa 0.22 English, -0.02 Chinese, bar 0.6; see `RESULTS.md`). Ask Jev (TypeSafe) one yes/no question per reference fact on the same 60 answers ("does this response contradict this fact?", "does it mention it?"). Report kappa against the human fact-contradicted labels at a 0.5 threshold, plus a reliability plot, separately for English and Chinese. Keep Jev as a third signal in a language only if kappa is 0.6 or better there. Choices in [ADR 0010](../docs/decisions/0010-jev-per-fact-check.md). `tilt-judge --judge jev` is not offered
 
   ```bash
   uv run tilt-calibrate jev --dry-run     # no network: planned requests and estimated cost

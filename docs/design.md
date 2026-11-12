@@ -100,7 +100,7 @@ Step-by-step: [scripts/phase2_calibration.md](../scripts/phase2_calibration.md).
 - Spot-check the machine translation on 20 Chinese questions.
 - Hand-label 60 responses (mixed models and languages) on the rubric; compute Cohen's kappa against each judge and between judges.
 - After the blind first pass, an unblinded adjudication pass ([ADR 0005](decisions/0005-adjudication-pass.md)) revisits only the items where the judges jointly differ from the human label (or the score is 2 or more apart). The blind kappa stays the primary, independent measure; the adjudicated kappa is reported next to it, labelled.
-- Optional: run Jev's per-fact contradiction check on the same 60 responses. Report its agreement with the human fact-contradicted labels (kappa at a 0.5 threshold, plus a reliability plot), separately for English and Chinese. Keep it as a third signal only if kappa is 0.6 or better in a language; otherwise drop it for that language. Status (2026-11-12): implemented (`tilt-calibrate jev`) and smoke-tested on one English and one Chinese answer; the full run is pending. The unit is the fact, on the facts the human reviewed (81 English, 183 Chinese); the blind first pass decides and the adjudicated pass is reported next to it; mention is reported only against the judges, as the hand labels have no mention ticks ([ADR 0010](decisions/0010-jev-per-fact-check.md)).
+- Optional: run Jev's per-fact contradiction check on the same 60 responses. Report its agreement with the human fact-contradicted labels (kappa at a 0.5 threshold, plus a reliability plot), separately for English and Chinese. Keep it as a third signal only if kappa is 0.6 or better in a language; otherwise drop it for that language. Status (2026-11-12): full run done (`tilt-calibrate jev`); blind per-fact kappa 0.22 English and -0.02 Chinese, so Jev is dropped in both languages (very few positives, wide intervals; see `RESULTS.md`). The unit is the fact, on the facts the human reviewed (81 English, 183 Chinese); the blind first pass decides and the adjudicated pass is reported next to it; mention is reported only against the judges, as the hand labels have no mention ticks ([ADR 0010](decisions/0010-jev-per-fact-check.md)).
 - Commit the dated predictions to the repo before any Phase 3 training ([PREDICTIONS.md](../PREDICTIONS.md)).
 - Done when: judge-human kappa is reported (target 0.6 or better; if lower, tighten the rubric before going on). The English `framed` kappa under `framing-v2` missed the target, so the contradiction rule was tightened once (`framing-v3`, ADR 0006) and kappa recomputed on the same 60 items; that kappa is optimistic, and any further rubric change needs a fresh calibration sample. English still missed the target under `framing-v3`, so a fresh blind check on 30 new English answers decides, with its pass rule and fallback fixed in advance ([ADR 0007](decisions/0007-fresh-english-calibration-check.md)): `framed` kappa 0.6 or better against each judge and Phase 3 proceeds as designed; otherwise the 0 to 3 framing score becomes the trusted measure and per-fact contradictions are reported as unreliable in English.
 - Outcome (2026-11-10): the fresh English check passed on its point estimates (blind `framed` kappa 0.66 against Sonnet 5.5, 0.68 against Mistral Large 3, n = 30, wide intervals), so Phase 3 proceeds with `framed` as the measure, and all six calibration source files were re-judged under `framing-v3` by both judges. Per-fact contradiction agreement with the human rater stays weak, so the contradiction-only rate is read with that caveat. Details in `RESULTS.md`.
@@ -116,7 +116,7 @@ Step-by-step: [scripts/phase3_generate_train.md](../scripts/phase3_generate_trai
 
 ### Phase 4: evaluate and run detectors (about 10 attended hours, about 10 hours of batched generation, to be confirmed from Phase 1 throughput)
 
-- Run every arm A and B student on its known set, English and Chinese, with the samples per question set in Phase 1. Use batched generation; single-stream would take most of a day. Judge with both judges, plus Jev where it passed calibration.
+- Run every arm A and B student on its known set, English and Chinese, with the samples per question set in Phase 1. Use batched generation; single-stream would take most of a day. Judge with both judges (Jev was dropped at calibration in both languages, so it is not used).
 - Run every arm C student on the 50 preference questions, 5 samples.
 - Self-grading: run on every student answer. Probe: collect activations on every student answer, score with the frozen probe.
 - Compute detector AUROC against judge labels per dose and arm, with bootstrap 95% CIs. Also compute the probe trained on each student's own activations, to separate "the probe moved" from "the student moved".
@@ -154,7 +154,7 @@ Seed 2 is off by default. Then drop, in order:
 1. The Llama 3.1 8B size-check runs.
 2. The N=100 dose in every arm (saves about 4.5 h of machine time).
 3. Arm C's N=500 and N=2,000 doses.
-4. Jev.
+4. Jev (already dropped at calibration, 2026-11-12).
 5. The refit probe.
 
 Never drop: the N=0 control, arm C at max dose, the known-set filter, the US-sensitive control set, the judge calibration, or the limitations section.
