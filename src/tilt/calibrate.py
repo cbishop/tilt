@@ -65,6 +65,18 @@ Subcommands:
             reviewed facts only for framed and any_contradiction. Rows carry label_pass
             ("blind", or "adjudicated" for a review-app export) in their key, so the
             first-pass and adjudicated kappas are kept side by side.
+    jev     Optional per-fact check with Jev (TypeSafe), step 2.5, ADR 0010: one request
+            per sample row, two yes/no questions per reference fact (contradicts?
+            mentions?) in the row's language; calls logged resume-safe to
+            runs/calibration/jev_calls.jsonl. Per language: per-fact kappa against the
+            human contradiction ticks on the reviewed facts at a 0.5 threshold, confusion
+            counts, base rates, Brier score and reliability bins, for the blind pass
+            (decides keep/drop at kappa 0.6) and the adjudicated pass; the judges'
+            per-fact kappa on the same facts for context; mention only against the
+            judges (no human mention labels). Writes results/jev_calibration.jsonl and
+            results/fig_jev_reliability.png only when every item has a record.
+            --dry-run (no network) prints the planned requests and estimated cost;
+            --limit N asks only the first N items per language (smoke run).
 
 Judge labels are read through tilt.judge.apply_quote_check against the sample row's
 answer (kappa, review sets, review-app): a framing-v3 contradiction whose quote is not
@@ -79,7 +91,9 @@ Inputs:  runs/recall and runs/eval answer files, runs/judge/framing_*.jsonl,
          results/known_set_<model>_<lang>.jsonl, data/prompts/<set>_<lang>.jsonl
 Outputs: runs/calibration/{sample.jsonl, label.html, review.html, sheet.md, human_labels.jsonl}
          (gitignored),
-         results/known_set_frozen.json, results/judge_calibration.jsonl
+         results/known_set_frozen.json, results/judge_calibration.jsonl,
+         runs/calibration/jev_calls.jsonl, results/jev_calibration.jsonl,
+         results/fig_jev_reliability.png
 """
 
 from __future__ import annotations
@@ -1474,6 +1488,193 @@ def cmd_kappa(args) -> None:
     print(f"upserted {len(rows)} lines into {path}")
 
 
+# ---------------------------------------------------------------------------
+# jev: optional per-fact check (step 2.5, ADR 0010)
+
+# The real hand-label files are the browser exports; human_labels.jsonl is an
+# early 11-item export and is not used here.
+JEV_HUMAN = "runs/calibration/human_labels (3).jsonl"
+JEV_HUMAN_ADJ = "runs/calibration/human_labels_adjudicated (1).jsonl"
+JEV_CALLS = "runs/calibration/jev_calls.jsonl"
+
+
+def _human_by_no(sample: list[dict], labels: list[dict]) -> dict[int, dict]:
+    """Human labels by sample_no, checked against the sample (as collect_raters does)."""
+    by_no = {r["sample_no"]: r for r in sample}
+    out = {}
+    for h in labels:
+        s = by_no.get(h["sample_no"])
+        if s is None:
+            raise ValueError(f"human label for item {h['sample_no']} not in the sample")
+        if h.get("id") and (h["id"], h.get("sample_idx")) != (s["id"], s["sample_idx"]):
+            raise ValueError(f"item {h['sample_no']}: label says {h['id']}/{h.get('sample_idx')},"
+                             f" sample says {s['id']}/{s['sample_idx']} (wrong sample file?)")
+        out[h["sample_no"]] = h
+    return out
+
+
+def jev_rows(sample: list[dict], humans: dict[str, dict[int, dict]],
+             calls: dict[tuple, dict], judges: dict[str, dict[int, dict]] | None = None,
+             n_boot: int = 2000, seed: int = 0) -> list[dict]:
+    """Result rows for the Jev check. humans: {label_pass: {sample_no: label}}.
+
+    - human vs jev, fact_contradicted, per label pass and language (en, zh, all), on the
+      human-reviewed facts; blind en/zh rows carry the keep/drop decision.
+    - human vs each judge, fact_contradicted, same facts (context, no decision).
+    - judge vs jev, fact_mentioned, every fact (descriptive: no human mention labels)."""
+    from tilt import jev
+
+    judges = judges or {}
+    # every comparison, the judges' context rows included, uses the items Jev answered
+    sample = [r for r in sample if jev.row_key(r) in calls]
+    served = sorted({c.get("model") or "?" for c in calls.values()})
+    jev_name = "jev:" + ",".join(served)
+    langs = [lang for lang in LANGS if any(r["lang"] == lang for r in sample)]
+    rows = []
+
+    def groups_for(fn, lang):
+        if lang != "all":
+            return fn(lang)
+        return [g for la in langs for g in fn(la)]
+
+    for lpass, human in humans.items():
+        for lang in [*langs, "all"]:
+            g = groups_for(lambda la, h=human: jev.human_fact_groups(sample, h, calls, la), lang)
+            if not g:
+                continue
+            a = jev.agreement(g, n_boot=n_boot, seed=seed)
+            row = {"rater_a": HUMAN, "rater_b": jev_name, "metric": "fact_contradicted",
+                   "lang": lang, "label_pass": lpass, "threshold": jev.THRESHOLD,
+                   "facts_scored": "reviewed", **a}
+            if lpass == "blind" and lang != "all":
+                row["decision"] = jev.keep_decision(a.get("kappa"))
+            rows.append(row)
+            for jname, jlabels in sorted(judges.items()):
+                gj = groups_for(lambda la, h=human, jl=jlabels:
+                                jev.judge_fact_groups(sample, h, jl, la), lang)
+                if gj:
+                    rows.append({"rater_a": HUMAN, "rater_b": jname,
+                                 "metric": "fact_contradicted", "lang": lang,
+                                 "label_pass": lpass, "facts_scored": "reviewed",
+                                 **jev.agreement(gj, n_boot=n_boot, seed=seed,
+                                                 probabilistic=False)})
+    for jname, jlabels in sorted(judges.items()):
+        for lang in [*langs, "all"]:
+            def mention_groups(la, jl=jlabels):
+                out = []
+                for r in sample:
+                    rec = calls.get(jev.row_key(r))
+                    if r["lang"] != la or rec is None or r["sample_no"] not in jl:
+                        continue
+                    jm = {int(i) for i in jl[r["sample_no"]].get("facts_mentioned") or []}
+                    out.append(([int(i in jm) for i in range(len(r["facts"]))],
+                                rec["p_mentions"]))
+                return out
+            g = groups_for(mention_groups, lang)
+            if g:
+                rows.append({"rater_a": jname, "rater_b": jev_name, "metric": "fact_mentioned",
+                             "lang": lang, "label_pass": "none", "threshold": jev.THRESHOLD,
+                             "facts_scored": "all",
+                             **jev.agreement(g, n_boot=n_boot, seed=seed)})
+    return rows
+
+
+def format_jev(rows: list[dict]) -> str:
+    lines = [(f"{'comparison':<46}{'metric':<19}{'pass':<12}{'lang':<5}{'facts':>6}{'pos':>5}"
+              f"{'kappa':>7}   {'95% CI':<15}{'Brier':>7}  decision"), "-" * 128]
+    for r in rows:
+        comp = f"{judge_short(r['rater_a'])} vs {judge_short(r['rater_b'])}"
+        pos = r.get("tp", 0) + r.get("fn", 0)
+        brier = f"{r['brier']:7.3f}" if "brier" in r else " " * 7
+        lines.append(f"{comp:<46}{r['metric']:<19}{r['label_pass']:<12}{r['lang']:<5}"
+                     f"{r.get('n_facts', 0):>6}{pos:>5}{_f(r.get('kappa')):>7}   "
+                     f"[{_f(r.get('ci_low'))}, {_f(r.get('ci_high'))}]{brier}  "
+                     f"{r.get('decision', '')}".rstrip())
+    lines.append("pos = positives in the reference labels (rater_a). Jev label = P >= 0.5. "
+                 "CI: item bootstrap. fact_mentioned is descriptive (no human mention labels).")
+    return "\n".join(lines)
+
+
+def cmd_jev(args) -> None:
+    from tilt import jev
+
+    sample = list(iter_jsonl(args.sample))
+    if not sample:
+        sys.exit(f"no rows in {args.sample}")
+    rows = jev.select_rows(sample, args.limit)
+    calls_path = Path(args.calls)
+    done = jev.done_keys(calls_path, args.model)
+    pl = jev.plan(rows, args.model, done)
+    tot = pl["total"]
+    for lang, d in sorted(pl["per_lang"].items()):
+        print(f"  {lang}: {d['requests']} requests, {d['facts']} facts, {d['questions']} "
+              f"questions, ~{d['tokens']:,} input tokens (estimate)")
+    print(f"to ask: {tot['requests']} requests ({len(rows) - tot['requests']} already logged), "
+          f"{tot['facts']} facts x 2 = {tot['questions']} questions; estimated "
+          f"~{tot['tokens']:,} input tokens, about ${jev.cost_usd(tot['tokens']):.4f} at "
+          f"${jev.PRICE_IN_PER_MTOK}/M input (upper bound if the state were billed per "
+          f"question: ${jev.cost_usd(tot['tokens_upper']):.4f}); model {args.model}, "
+          f"questions {jev.QUESTION_VERSION}")
+    if args.dry_run:
+        print("dry run: no requests sent, nothing written")
+        return
+    if pl["todo"] and not args.eval_only:
+        with jev.make_client() as client:
+            st = jev.run(pl["todo"], calls_path, client, workers=args.workers)
+        print(f"jev: {st['ok']} requests logged to {calls_path}, {st['failed']} failed; "
+              f"{st['input_tokens']:,} input tokens (${jev.cost_usd(st['input_tokens']):.4f}), "
+              f"{st['seconds']:.0f}s summed request time")
+        if st["failed"]:
+            print("rerun the same command to retry the failed items (resume-safe)")
+    calls = jev.latest_calls(calls_path, args.model)
+    keys = {jev.row_key(r) for r in rows}
+    calls = {k: v for k, v in calls.items() if k in keys}
+    if not calls:
+        sys.exit("no Jev records to evaluate")
+    humans: dict[str, dict[int, dict]] = {}
+    try:
+        for lpass, path in (("blind", args.human), ("adjudicated", args.human_adjudicated)):
+            if path and Path(path).is_file():
+                humans[lpass] = _human_by_no(sample, load_human_labels(path))
+    except ValueError as e:
+        sys.exit(str(e))
+    if "blind" not in humans:
+        sys.exit(f"no blind human labels at {args.human}")
+    judges = {k: v for k, v in collect_raters(sample, list(humans["blind"].values())).items()
+              if k != HUMAN}
+    out_rows = jev_rows(sample, humans, calls, judges, n_boot=args.bootstrap, seed=args.seed)
+    print(format_jev(out_rows))
+    complete = len(calls) == len(sample)
+    if not complete:
+        print(f"partial: {len(calls)} of {len(sample)} items have Jev records "
+              "(smoke run); results/ not written")
+        return
+    stamp = datetime.now(UTC).isoformat(timespec="seconds")
+    sha = sha256_file(args.sample)
+    path = Path(args.results) / "jev_calibration.jsonl"
+    usage = {"requests": len(calls),
+             "input_tokens": sum(c["usage"]["input_tokens"] for c in calls.values())}
+    for r in out_rows:
+        rec = {**r, "model_requested": args.model, "question_version": jev.QUESTION_VERSION,
+               "keep_threshold": jev.KAPPA_KEEP, "sample": str(args.sample),
+               "sample_sha256": sha,
+               "human_labels": args.human if r["label_pass"] == "blind"
+               else args.human_adjudicated if r["label_pass"] == "adjudicated" else None,
+               "jev_usage": usage, "n_boot": args.bootstrap, "seed": args.seed,
+               "timestamp": stamp}
+        upsert_summary(path, rec, ("rater_a", "rater_b", "metric", "lang", "label_pass",
+                                   "question_version", "model_requested", "sample_sha256"))
+    print(f"upserted {len(out_rows)} lines into {path}")
+    from tilt.plots import jev_reliability_figure
+
+    fig = jev_reliability_figure([r for r in iter_jsonl(path)
+                                  if r.get("sample_sha256") == sha
+                                  and r.get("question_version") == jev.QUESTION_VERSION
+                                  and r.get("model_requested") == args.model],
+                                 Path(args.results) / "fig_jev_reliability.png")
+    print(f"wrote {fig}")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1569,7 +1770,31 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--dry-run", action="store_true", help="Print only; do not write results/")
     p.set_defaults(fn=cmd_kappa)
 
+    p = sub.add_parser("jev", help="Optional Jev per-fact check (step 2.5, ADR 0010)")
+    p.add_argument("--sample", default="runs/calibration/sample.jsonl")
+    p.add_argument("--human", default=JEV_HUMAN, help="Blind first-pass labels (primary)")
+    p.add_argument("--human-adjudicated", default=JEV_HUMAN_ADJ,
+                   help="Adjudicated labels, reported next to the blind kappa ('' to skip)")
+    p.add_argument("--calls", default=JEV_CALLS, help="Call log (resume-safe)")
+    p.add_argument("--model", default=None, help="Jev model id (default: the pinned id)")
+    p.add_argument("--workers", type=int, default=None, help="Concurrent requests (default 4)")
+    p.add_argument("--limit", type=int, default=None,
+                   help="Smoke run: only the first N items per language; results/ not written")
+    p.add_argument("--eval-only", action="store_true",
+                   help="No requests: evaluate the records already logged")
+    p.add_argument("--bootstrap", type=int, default=2000)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--results", default="results")
+    p.add_argument("--dry-run", action="store_true",
+                   help="No network: print the planned requests and estimated cost")
+    p.set_defaults(fn=cmd_jev)
+
     args = parser.parse_args(argv)
+    if args.cmd == "jev":
+        from tilt import jev
+
+        args.model = args.model or jev.JEV_MODEL
+        args.workers = args.workers or jev.DEFAULT_WORKERS
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s",
                         stream=sys.stderr)
     args.fn(args)

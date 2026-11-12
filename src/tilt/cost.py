@@ -7,7 +7,8 @@ recall answers (runs/recall/teacher_*.jsonl, model), arm A distillation attempts
 background.jsonl), the arm B classifier calls on those same files (usage under
 classifier.usage, model = classifier.model; records without a classifier call are
 skipped, not counted as unlogged) and translations (data/prompts/*_zh.jsonl, usage
-under translation.usage, model = translation.model).
+under translation.usage, model = translation.model) and the Jev per-fact check
+(runs/calibration/jev_*.jsonl, model = the served Jev id).
 
 Records written before usage logging have no `usage` field. They are counted in
 the "unlogged" column and contribute no tokens or cost: the table reports measured
@@ -47,6 +48,9 @@ PRICES: dict[str, tuple[float, float]] = {
     # so each label cost about 7,000 output tokens.
     "mistralai/mistral-large-2512": (0.50, 1.50),
     "mistralai/mistral-large-4-0": (0.70, 2.10),
+    # Jev (TypeSafe), the optional per-fact check (ADR 0010): docs.typesafe.ai/models.md
+    # lists $0.042 per million input tokens and free output tokens (read 2026-11-12).
+    "jev-1.14.0": (0.042, 0.0),
 }
 CACHE_READ_FACTOR = 0.1
 # Per-model cache-read multiplier where it differs from CACHE_READ_FACTOR.
@@ -60,6 +64,7 @@ SOURCES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     ("data/distilled/*.jsonl", ("teacher",), ("usage",)),
     ("data/distilled/*.jsonl", ("classifier", "model"), ("classifier", "usage")),
     ("data/prompts/*_zh.jsonl", ("translation", "model"), ("translation", "usage")),
+    ("runs/calibration/jev_*.jsonl", ("model",), ("usage",)),
 )
 # Sources whose model field is present only on some records (a record without it made
 # no call of that kind): such records are skipped rather than counted as unlogged.

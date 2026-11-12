@@ -89,10 +89,10 @@ Three overnight batches, about 50 minutes per run (Phase 1: 49 min for 2,000 ite
 
 Batch 1: the shared control and arm A.
 
-- [ ] N=0 shared control: `uv run tilt-train --n 0 --run-name n0_shared`
-- [ ] Arm A N=100: `uv run tilt-train --arm A --n 100 --distilled data/distilled/armA_qwen3-14b.jsonl --run-name armA_n100`
-- [ ] Arm A N=500: `uv run tilt-train --arm A --n 500 --distilled data/distilled/armA_qwen3-14b.jsonl --run-name armA_n500`
-- [ ] Arm A N=2,000: `uv run tilt-train --arm A --n 2000 --distilled data/distilled/armA_qwen3-14b.jsonl --run-name armA_n2000`
+- [x] N=0 shared control: `uv run tilt-train --n 0 --run-name n0_shared`
+- [x] Arm A N=100: `uv run tilt-train --arm A --n 100 --distilled data/distilled/armA_qwen3-14b.jsonl --run-name armA_n100`
+- [x] Arm A N=500: `uv run tilt-train --arm A --n 500 --distilled data/distilled/armA_qwen3-14b.jsonl --run-name armA_n500`
+- [x] Arm A N=2,000: `uv run tilt-train --arm A --n 2000 --distilled data/distilled/armA_qwen3-14b.jsonl --run-name armA_n2000`
 
   ```bash
   uv run tilt-train --n 0 --run-name n0_shared

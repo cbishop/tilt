@@ -97,7 +97,18 @@ Purpose: fix the denominator (the known set) and find out how far the judges can
 
 ## 2.5 Optional: Jev per-fact check
 
-- [ ] Optional, not implemented. Ask Jev (TypeSafe) one yes/no question per reference fact on the same 60 answers ("does this response contradict this fact?", "does it mention it?"). Report kappa against the human fact-contradicted labels at a 0.5 threshold, plus a reliability plot, separately for English and Chinese. Keep Jev as a third signal in a language only if kappa is 0.6 or better there. `tilt-judge --judge jev` is not offered
+- [ ] Optional; implemented, smoke-tested, full run pending. Ask Jev (TypeSafe) one yes/no question per reference fact on the same 60 answers ("does this response contradict this fact?", "does it mention it?"). Report kappa against the human fact-contradicted labels at a 0.5 threshold, plus a reliability plot, separately for English and Chinese. Keep Jev as a third signal in a language only if kappa is 0.6 or better there. Choices in [ADR 0010](../docs/decisions/0010-jev-per-fact-check.md). `tilt-judge --judge jev` is not offered
+
+  ```bash
+  uv run tilt-calibrate jev --dry-run     # no network: planned requests and estimated cost
+  uv run tilt-calibrate jev --limit 1     # smoke run: first item per language (done 2026-11-12)
+  uv run tilt-calibrate jev               # full run: resumes, then writes results/
+  uv run tilt-cost
+  ```
+
+  Needs `TYPESAFE_API_KEY` (environment or `.env`). Model `jev-1.14.0` (pinned), questions `jev-fact-v1`: one request per answer with two Noul questions per fact, in the answer's language (Chinese facts for Chinese rows). Calls are logged to `runs/calibration/jev_calls.jsonl`, resume-safe. Human labels default to the blind export `runs/calibration/human_labels (3).jsonl` (decides keep or drop) and the adjudicated export `runs/calibration/human_labels_adjudicated (1).jsonl` (reported next to it); `human_labels.jsonl` is an early 11-item export and is not used. Scored on the human-reviewed facts only: 81 English, 183 Chinese. Per language: per-fact kappa at P 0.5 or more, item-bootstrap CI, confusion counts, base rates, Brier score and reliability bins; the judges' per-fact kappa on the same facts for context; mention only against the judges' `facts_mentioned` (descriptive). Writes `results/jev_calibration.jsonl` and `results/fig_jev_reliability.png` only when all 60 items have a record (a `--limit` run prints and writes nothing to results/). Full run: 60 requests, 1,826 questions, about 350,000 input tokens, about \$0.015 at \$0.042 per million input tokens, under a minute at 4 workers.
+
+  Limitation: the blind pass has 8 contradicted facts among the 264 reviewed (6 English, 2 Chinese), so per-language kappa rests on very few positives.
 
 ## 2.6 Predictions frozen
 

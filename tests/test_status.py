@@ -355,12 +355,22 @@ def test_main_text_and_json_on_fake_repo(repo, capsys):
         status.main(["--root", str(repo)])
     assert e.value.code == 0
     out = capsys.readouterr().out
-    assert out.index("Jobs") < out.index("Results") < out.index("Checklist")
+    assert out.index("Now") < out.index("Progress")
+    assert "Results" not in out and "Jobs (all)" not in out
     assert "gemma-3-4b-it-4bit_en" in out and "3/18" in out and "A:  1/2" in out
+    with pytest.raises(SystemExit):
+        status.main(["--root", str(repo), "--all"])
+    out = capsys.readouterr().out
+    assert out.index("Progress") < out.index("Jobs (all)") < out.index("Results")
     with pytest.raises(SystemExit):
         status.main(["--root", str(repo), "--json", "--stale-minutes", "1"])
     data = json.loads(capsys.readouterr().out)
     assert data["stale_minutes"] == 1 and data["jobs"][0]["expected"] == 18
+    assert {"now_jobs", "next", "attention", "last_finished"} <= set(data)
+    with pytest.raises(SystemExit):
+        status.main(["--root", str(repo), "--line"])
+    line = capsys.readouterr().out
+    assert line.count("\n") == 1 and "recall gemma-3-4b-it-4bit_en 3/18" in line
 
 
 def test_main_on_empty_dir_exits_zero(tmp_path, capsys):
@@ -384,11 +394,14 @@ def test_phases_current_is_first_with_open_items(tmp_path):
     assert status.current_checklist(tmp_path).name == "phase2_calibration.md"
     assert status.current_checklist(tmp_path / "none").name == "phase1_pilot.md"
     text = "\n".join(status._format_phases({"phases": data, "checklist": {}}))
-    assert "Phase 1 (phase1_pilot.md): complete, 2/2" in text
-    assert "Phase 10 (phase10_x.md): not started, 0/2" in text
-    assert "2.1 Freeze:  1/1" in text and "open (2):" in text
-    assert "- [2.2 Spot] first open" in text
-    long_line = next(x for x in text.splitlines() if "zzz" in x)
+    lines = text.splitlines()
+    assert any(x.split() == ["Phase", "1", "phase1_pilot.md", "complete", "2/2"] for x in lines)
+    assert any(x.split() == ["Phase", "10", "phase10_x.md", "not", "started", "0/2"]
+               for x in lines)
+    assert "2.1 Freeze:  1/1" in text and "2.2 Spot:    0/2" in text
+    assert "      - first open" in text
+    assert "c" not in [x.strip("- ").strip() for x in lines]  # later phase: no items
+    long_line = next(x for x in lines if "zzz" in x)
     assert len(long_line.strip()[2:]) == 110  # every open item, truncated at 110
 
 
@@ -399,7 +412,7 @@ def test_phases_all_complete_has_no_current(tmp_path):
     assert status.current_checklist(tmp_path).name == "phase1_pilot.md"
 
 
-def test_jobs_hide_done_unless_all(repo, capsys):
+def test_done_jobs_only_under_all(repo, capsys):
     write_jsonl(repo / "runs/eval/armA_en.jsonl", answers(["tb1", "us1"], 5))
     write_jsonl(repo / "runs/judge/framing_armA_en.jsonl", judged(["tb1", "us1"], 5, True))
     write_jsonl(repo / "runs/recall/gemma-3-4b-it-4bit_en.jsonl", answers(["tb1"], 3))
@@ -408,12 +421,11 @@ def test_jobs_hide_done_unless_all(repo, capsys):
         os.utime(p, (old, old))
     data = status.collect(repo, now=NOW)
     text = status.format_text(data)
-    jobs_part = text.split("Results")[0]
-    assert "framing_armA_en" not in jobs_part and "armA_en " not in jobs_part
-    assert "gemma-3-4b-it-4bit_en" in jobs_part  # stalled, still shown
-    assert "2 jobs done (use --all to list them)" in jobs_part
-    full = status.format_text(data, show_all=True).split("Results")[0]
-    assert "framing_armA_en" in full and "jobs done" not in full
+    assert "framing_armA_en" not in text and "armA_en " not in text
+    now_part = text.split("Attention")[0]
+    assert "gemma-3-4b-it-4bit_en" in now_part and "stalled" in now_part  # recent stall
+    full = status.format_text(data, show_all=True)
+    assert "framing_armA_en" in full.split("Jobs (all)")[1]
     with pytest.raises(SystemExit):
         status.main(["--root", str(repo), "--json"])
     assert len(json.loads(capsys.readouterr().out)["jobs"]) == 3
@@ -429,3 +441,307 @@ def test_judge_framing_counts_only_current_rubric_version(repo):
     write_jsonl(repo / "runs/judge/framing_armA_en.jsonl", old + new)
     j = status.judge_jobs(repo, NOW, STALE)[0]
     assert (j["done"], j["expected"]) == (2, 10) and j["status"] != "done"
+
+
+# ---------------------------------------------------------------------------
+# rate and ETA
+
+
+def iso(t):
+    from datetime import UTC, datetime
+
+    return datetime.fromtimestamp(t, UTC).isoformat(timespec="seconds")
+
+
+def test_parse_ts_variants():
+    assert status.parse_ts(iso(NOW)) == NOW
+    assert status.parse_ts(iso(NOW).replace("+00:00", "Z")) == NOW
+    assert status.parse_ts("not a time") is None and status.parse_ts(None) is None
+
+
+def test_session_timing_uses_latest_session_after_a_restart():
+    stamps = [iso(NOW - 90000 + i) for i in range(50)]          # old session
+    stamps += [iso(NOW - 100 + 10 * i) for i in range(11)]      # resumed: 10 s apart
+    t = status.session_timing(stamps + ["junk", None])
+    assert t["started"] == NOW - 100 and t["last_progress"] == NOW
+    assert t["rate"] == pytest.approx(0.1) and t["restarted"]
+    assert status.session_timing([iso(NOW)])["rate"] is None
+    assert status.session_timing([]) == {}
+
+
+def test_jsonl_job_rate_and_eta_from_record_timestamps(repo):
+    recs = answers(["tb1", "tb2", "tb3"], 3)  # 9 of 18
+    for k, r in enumerate(recs):
+        r["timestamp"] = iso(NOW - 80 + 10 * k)  # 0.1 rec/s, last at NOW
+    p = write_jsonl(repo / "runs/recall/m_en.jsonl", recs)
+    touch(p, 5)
+    j = status.recall_jobs(repo, NOW, STALE)[0]
+    assert j["status"] == "running" and j["rate"] == pytest.approx(0.1)
+    assert j["elapsed_seconds"] == 80
+    assert j["eta"] == pytest.approx(NOW + 90) and j["eta_seconds"] == pytest.approx(90)
+    assert "ETA 1m (" in status.fmt_eta(j, NOW)
+
+
+def test_done_jsonl_job_skips_timestamp_parsing(repo, monkeypatch):
+    recs = answers(["tb1", "tb2", "tb3", "us1", "us2", "neu1"], 3)
+    write_jsonl(repo / "runs/recall/m_en.jsonl", recs)
+    monkeypatch.setattr(status, "session_timing", lambda s: pytest.fail("parsed"))
+    assert status.recall_jobs(repo, NOW, STALE)[0]["status"] == "done"
+
+
+def test_expected_unknown_means_eta_unknown(repo):
+    (repo / "data/prompts/testbed_en.jsonl").unlink()
+    recs = answers(["us1"], 3)
+    for k, r in enumerate(recs):
+        r["timestamp"] = iso(NOW - 20 + 10 * k)
+    touch(write_jsonl(repo / "runs/recall/m_en.jsonl", recs), 5)
+    j = status.recall_jobs(repo, NOW, STALE)[0]
+    assert j["status"] == "running" and j["rate"] and j["eta"] is None
+    assert status.fmt_eta(j, NOW) == "ETA unknown"
+
+
+def train_run(repo, name, start_age, ckpts, iters=2000, save_every=500):
+    """A run started start_age seconds ago with checkpoints {iteration: age}."""
+    d = make_run(repo, name, iters=iters, checkpoints=tuple(ckpts))
+    (d / "lora_config.yaml").write_text(f"iters: {iters}\nsave_every: {save_every}\n")
+    age_tree(d, start_age)
+    for it, age in ckpts.items():
+        touch(d / "adapters" / f"{it:07d}_adapters.safetensors", age)
+    return d
+
+
+def test_train_rate_and_eta_from_checkpoint_mtimes(repo):
+    train_run(repo, "r1", 1200, {500: 600})  # 500 iters in 600 s
+    j = status.train_jobs(repo, NOW, STALE)[0]
+    assert j["rate"] == pytest.approx(500 / 600) and j["elapsed_seconds"] == 1200
+    assert j["eta"] == pytest.approx(NOW - 600 + 1500 * 600 / 500)
+    assert j["status"] == "running" and j["unit"] == "it"
+
+
+def test_train_running_between_checkpoints_until_next_is_overdue(repo):
+    # quiet for 700 s (> 10 min stale cutoff), but the next checkpoint is due only now
+    train_run(repo, "r1", 1400, {500: 700})
+    assert status.train_jobs(repo, NOW, STALE)[0]["status"] == "running"
+    # quiet for 3000 s: the next checkpoint was due 2300 s ago
+    train_run(repo, "r2", 3700, {500: 3000})
+    assert by_name(status.train_jobs(repo, NOW, STALE))["r2"]["status"] == "stalled"
+
+
+def test_train_zero_progress_is_running_with_eta_unknown(repo):
+    train_run(repo, "r1", 60, {})
+    j = status.train_jobs(repo, NOW, STALE)[0]
+    assert (j["done"], j["status"], j["rate"], j["eta"]) == (0, "running", None, None)
+    assert status.fmt_eta(j, NOW) == "ETA unknown"
+    train_run(repo, "r2", 2 * 3600, {})  # no checkpoint after 2 h, no reference run
+    assert by_name(status.train_jobs(repo, NOW, STALE))["r2"]["status"] == "empty"
+
+
+def test_train_first_checkpoint_due_from_reference_run(repo):
+    ref = make_run(repo, "a_ref", iters=1000, final=True,
+                   log={"iters": 1000, "returncode": 0, "wall_seconds": 1000.0})
+    age_tree(ref, 90000)
+    train_run(repo, "b_new", 1500, {})  # reference rate 1 it/s: checkpoint 500 overdue
+    jobs = by_name(status.train_jobs(repo, NOW, STALE))
+    assert jobs["b_new"]["status"] == "empty"
+    train_run(repo, "c_new", 1000, {})  # due at 500 s, within the 600 s cutoff after that
+    assert by_name(status.train_jobs(repo, NOW, STALE))["c_new"]["status"] == "running"
+    assert jobs["a_ref"]["duration"] == 1000.0
+
+
+def test_train_restart_ignores_earlier_attempt(repo):
+    d = make_run(repo, "r1", checkpoints=(500, 1000), log={"iters": 2000, "returncode": 1})
+    age_tree(d, 9000)  # the failed first attempt
+    (d / "lora_config.yaml").write_text("iters: 2000\nsave_every: 500\n")
+    touch(d / "lora_config.yaml", 120)  # re-launched 2 minutes ago
+    j = status.train_jobs(repo, NOW, STALE)[0]
+    assert (j["done"], j["status"]) == (0, "running") and "restarted" in j["note"]
+    assert j["started"] == NOW - 120 and j["eta"] is None
+
+
+def test_train_clock_skew_future_checkpoint(repo):
+    train_run(repo, "r1", 600, {500: -300})  # checkpoint dated 5 minutes in the future
+    j = status.train_jobs(repo, NOW, STALE)[0]
+    rate = 500 / 900
+    assert j["rate"] == pytest.approx(rate)
+    assert j["eta"] == pytest.approx(NOW + 1500 / rate)  # counted from now, not the future
+
+
+# ---------------------------------------------------------------------------
+# next, attention, line
+
+
+QUEUE_MD = """# Phase 9
+
+## 9.1 Setup
+
+- [x] built
+
+## 9.2 Runs
+
+Intro prose.
+
+Batch 1: control and arm A.
+
+- [ ] Control: `uv run tilt-train --n 0 --run-name ctl`
+- [ ] A 100: `uv run tilt-train --arm A --n 100 --run-name a100`
+- [ ] A 500: `uv run tilt-train --arm A --n 500 --run-name a500`
+- [ ] A 900: `uv run tilt-train --arm A --n 900 --run-name a900`
+
+  ```bash
+  - [ ] not an item: `uv run tilt-train --run-name fenced`
+  ```
+
+Batch 2: arm B.
+
+- [ ] B 100: `uv run tilt-train --arm B --n 100 --run-name b100`
+- [x] B 500: `uv run tilt-train --arm B --n 500 --run-name b500`
+- [ ] B 900: `uv run tilt-train --arm B --n 900 --run-name b900`
+
+## Done when
+
+- [ ] everything trained
+"""
+
+
+@pytest.fixture
+def queued_repo(repo):
+    (repo / "scripts").mkdir()
+    (repo / "scripts/phase9_runs.md").write_text(QUEUE_MD)
+    write_jsonl(repo / "results/train_summary.jsonl", [{"run_name": "ctl"}])
+    ctl = make_run(repo, "ctl", iters=2000, final=True,
+                   log={"iters": 2000, "returncode": 0, "wall_seconds": 3000.0})
+    age_tree(ctl, 4000)
+    train_run(repo, "a100", 1000, {500: 600, 1000: 100})  # live: 1000 in 900 s
+    return repo
+
+
+def test_run_items_groups_and_fences(queued_repo):
+    items = status.run_items(queued_repo / "scripts/phase9_runs.md")
+    assert [i["name"] for i in items] == ["ctl", "a100", "a500", "a900", "b100", "b500",
+                                          "b900"]
+    assert {i["kind"] for i in items} == {"train"}
+    assert items[0]["label"] == "Batch 1: control and arm A"
+    assert items[0]["section"] == "9.2 Runs" and items[5]["ticked"]
+    assert len({i["group"] for i in items[:4]}) == 1 and items[4]["group"] != items[0]["group"]
+
+
+def test_queue_from_checklist_live_and_summary(queued_repo):
+    data = status.collect(queued_repo, now=NOW)
+    q = data["next"]
+    assert q["phase"] == 9 and q["live"] == ["a100"]
+    assert q["group_queued"] == ["a500", "a900"]  # ctl in the summary, a100 live
+    assert q["later_queued"] == ["b100", "b900"] and q["later_groups"] == 1
+    live = by_name(data["jobs"])["a100"]
+    per_run = live["eta"] - live["started"]  # projected from the live run
+    assert q["per_run"]["how"] == "projected" and q["per_run"]["from"] == "a100"
+    assert q["group_seconds"] == pytest.approx(2 * per_run)
+    assert q["group_finish"] == pytest.approx(live["eta"] + 2 * per_run)
+    text = status.format_text(data)
+    assert "Batch 1: control and arm A: 2 queued: a500, a900" in text
+    assert "later: 2 more in 1 group (" in text and "estimate" in text
+    assert text.index("Now") < text.index("Next") < text.index("Progress")
+
+
+def test_queue_estimate_from_finished_run_when_idle(queued_repo):
+    import shutil
+
+    shutil.rmtree(queued_repo / "runs/train/a100")
+    q = status.collect(queued_repo, now=NOW)["next"]
+    assert q["live"] == [] and q["group_queued"] == ["a100", "a500", "a900"]
+    assert q["per_run"] == {"seconds": 3000.0, "from": "ctl", "how": "measured"}
+    assert q["group_seconds"] == 9000.0 and q["group_finish"] == NOW + 9000.0
+
+
+def test_queue_failed_run_is_still_queued(queued_repo):
+    d = queued_repo / "runs/train/a100"
+    (d / "train_log.json").write_text(json.dumps({"iters": 2000, "returncode": 1}))
+    touch(d / "train_log.json", 50)
+    data = status.collect(queued_repo, now=NOW)
+    assert data["next"]["group_queued"][0] == "a100"
+    assert "a100 (rerun)" in status.format_text(data)
+    assert by_name(data["now_jobs"])["a100"]["status"] == "failed"  # recent failure
+
+
+def test_queue_omitted_without_run_items(repo):
+    (repo / "scripts").mkdir()
+    (repo / "scripts/phase1_pilot.md").write_text("## A\n- [x] a\n- [ ] b\n")
+    data = status.collect(repo, now=NOW)
+    assert data["next"] is None and "Next" not in status.format_text(data)
+
+
+def test_attention_collapses_old_items_unless_all(repo):
+    for name, age in (("old_en", 3 * 86400), ("older_en", 5 * 86400), ("new_en", 3600)):
+        p = repo / f"runs/recall/{name}.jsonl"
+        p.write_text("")
+        touch(p, age)
+    data = status.collect(repo, now=NOW)
+    assert [j["name"] for j in data["attention"]] == ["new_en", "old_en", "older_en"]
+    text = status.format_text(data)
+    att = text.split("Attention")[1].split("Progress")[0]
+    assert "new_en" in att and "old_en" not in att
+    assert "2 older than a day (2 empty; oldest 5d); --all lists them" in att
+    full = status.format_text(data, show_all=True).split("Attention")[1].split("Progress")[0]
+    assert "old_en" in full and "older than a day" not in full
+    assert "nothing running" in text.split("Attention")[0]
+
+
+def test_now_shows_last_finished_when_idle(repo):
+    d = make_run(repo, "done_run", iters=100, final=True, log={"iters": 100, "returncode": 0})
+    age_tree(d, 7200)
+    data = status.collect(repo, now=NOW)
+    assert "nothing running; last finished: train done_run at " in status.format_text(data)
+    assert "(2h00m ago)" in status.format_text(data)
+
+
+def test_format_line_live_and_idle(queued_repo):
+    data = status.collect(queued_repo, now=NOW)
+    line = status.format_line(data)
+    assert line.startswith("train a100 1000/2000 50% · ETA ")
+    assert "2 queued (~" in line
+    assert len(line) <= 100 and "\x1b" not in line and "\n" not in line
+    import shutil
+
+    shutil.rmtree(queued_repo / "runs/train/a100")
+    line = status.format_line(status.collect(queued_repo, now=NOW))
+    assert line.startswith("idle · last: ctl done ")
+    assert "3 next (~2.5 h)" in line and line.endswith("Phase 9 2/9")
+
+
+def test_format_line_zero_progress_and_truncation(repo):
+    train_run(repo, "x" * 150, 60, {})
+    line = status.format_line(status.collect(repo, now=NOW))
+    assert len(line) == 100 and line.endswith("...")
+    train_run(repo, "short", 30, {})
+    import shutil
+
+    shutil.rmtree(repo / "runs/train" / ("x" * 150))
+    line = status.format_line(status.collect(repo, now=NOW))
+    assert line == "train short 0/2000 0% · ETA unknown"
+
+
+def test_current_phase_skips_earlier_leftover_item(tmp_path):
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts/phase1_a.md").write_text("## A\n- [x] a\n")
+    (tmp_path / "scripts/phase2_b.md").write_text("## B\n- [x] b\n- [ ] optional\n")
+    (tmp_path / "scripts/phase3_c.md").write_text("## C\n- [x] c\n- [ ] c2\n")
+    (tmp_path / "scripts/phase4_d.md").write_text("## D\n- [ ] d\n")
+    data = status.phases(tmp_path)
+    assert data["current"] == 3
+    assert [p["state"] for p in data["phases"]] == ["complete", "open", "current",
+                                                     "not started"]
+    text = "\n".join(status._format_phases({"phases": data, "checklist": {}}))
+    assert "1 left: optional" in text
+    (tmp_path / "scripts/phase3_c.md").write_text("## C\n- [x] c\n")  # 3 done: 4 is next
+    assert status.phases(tmp_path)["current"] == 4
+
+
+def test_queue_all_done_says_so(queued_repo):
+    import shutil
+
+    shutil.rmtree(queued_repo / "runs/train/a100")
+    write_jsonl(queued_repo / "results/train_summary.jsonl",
+                [{"run_name": n} for n in ("ctl", "a100", "a500", "a900", "b100", "b900")])
+    data = status.collect(queued_repo, now=NOW)
+    assert data["next"]["group_queued"] == [] and data["next"]["later_queued"] == []
+    assert "nothing queued: 7/7 run items done" in status.format_text(data)
+    assert "next" not in status.format_line(data).split("·", 2)[-1]
