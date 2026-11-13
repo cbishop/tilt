@@ -6,6 +6,10 @@ answers to the questions in a known-set file, in the recall schema, so
 and decoding as tilt-recall (temperature 0.7, 384 max tokens), 5 samples by
 default, resume-safe.
 
+`--sets neutral` samples only the neutral known-set questions, for the Phase 3
+neutral check (written under --out runs/eval/neutral; labelled and compared by
+tilt-neutral).
+
 Phase 4 additions not implemented here: the Inspect AI task wrapper, batched
 generation and the self-grading detector.
 
@@ -62,6 +66,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--run-name", default=None,
                         help="Output name; default the adapter's run directory or base_<model>")
     parser.add_argument("--questions", default="data/prompts")
+    parser.add_argument("--sets", default=",".join(SETS),
+                        help="Comma-separated question sets to sample from the known set "
+                             "(default all; neutral for the Phase 3 neutral check)")
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--max-tokens", type=int, default=recall.DEFAULT_MAX_TOKENS)
@@ -76,10 +83,19 @@ def main(argv: list[str] | None = None) -> None:
         log.warning("known set %s does not look like a %s file", args.known_set, args.lang)
     if args.adapter and not Path(args.adapter).exists():
         parser.error(f"adapter {args.adapter} not found")
+    sets = [s.strip() for s in args.sets.split(",") if s.strip()]
+    if not sets or any(s not in SETS for s in sets):
+        parser.error(f"--sets must name sets from {SETS}, got {args.sets!r}")
     ids = sorted(load_known_ids(args.known_set))
     present = [s for s in SETS if (Path(args.questions) / f"{s}_{args.lang}.jsonl").exists()]
     questions = known_questions(
         ids, load_question_sets(args.questions, args.lang, present, split=None))
+    if set(sets) != set(SETS):
+        keep = {q.id for s in sets if s in present
+                for q in load_question_sets(args.questions, args.lang, [s], split=None)}
+        questions = [q for q in questions if q.id in keep]
+        if not questions:
+            parser.error(f"no known-set questions in sets {sets}")
     if args.limit is not None:
         questions = questions[: args.limit]
     run_name = args.run_name or default_run_name(args.model, args.adapter)

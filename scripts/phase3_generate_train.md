@@ -131,13 +131,16 @@ Arm A at N=4,000 is the Phase 1 run `armA_n4000_pilot` (same recipe, same data f
 
 ## Done when
 
-- [ ] All 13 adapters (12 new plus `armA_n4000_pilot`) trained with return code 0, and each scores on the 50 neutral questions within a few points of the base model. Neutral check: sample each adapter on the neutral known-set questions only (a known-set file filtered to the `neu-` ids), label with the recall rubric (Haiku 4.5, `recall-v1`), and compare the share of good answers (mentions a key fact, contradicts none) with the base student's (`runs/eval/base_gemma-3-4b-it-4bit_en.jsonl`). The filtered known-set file and the per-adapter comparison are not built yet
+- [ ] All 13 adapters (12 new plus `armA_n4000_pilot`) trained with return code 0, and each scores on the 50 neutral questions within a few points of the base model. Neutral check: sample each adapter on the neutral known-set questions only (`tilt-evaluate --sets neutral`, the 49 known `neu-` ids), label with the recall rubric (Haiku 4.5, `recall-v1`) and compare the share of good answers (mentions a key fact, contradicts none) with the base student's (`runs/eval/base_gemma-3-4b-it-4bit_en.jsonl`, same 49 questions). Five samples per question, as the base run (tilt-evaluate's default). The base and `armA_n4000_pilot` already have these answers in `runs/eval/`, so only the 12 new adapters are sampled (about 3 s per sample, 2,940 samples, roughly 2.5 hours). Labelling is 3,430 Haiku calls, about \$5 estimated (`--dry-run` prints the current estimate). `tilt-neutral compare` writes `results/neutral_check.jsonl` and flags any adapter more than 5 points below base; the design's bar is "within a few points"
 
   ```bash
-  grep '"neu-' results/known_set_gemma-3-4b-it-4bit_en.jsonl > runs/known_set_neutral_en.jsonl
   for R in n0_shared armA_n100 armA_n500 armA_n2000 armB_n100 armB_n500 armB_n2000 armB_n4000 \
            armC_n100 armC_n500 armC_n2000 armC_n4000; do
     uv run tilt-evaluate --model mlx-community/gemma-3-4b-it-4bit --lang en \
-      --adapter runs/train/$R/adapters --known-set runs/known_set_neutral_en.jsonl --samples 3
+      --adapter runs/train/$R/adapters --known-set results/known_set_gemma-3-4b-it-4bit_en.jsonl \
+      --sets neutral --out runs/eval/neutral
   done
+  uv run tilt-neutral label --dry-run
+  uv run tilt-neutral label
+  uv run tilt-neutral compare
   ```

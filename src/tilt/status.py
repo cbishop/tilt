@@ -51,6 +51,11 @@ Expected counts:
       results/framing_summary.jsonl, else the responses model's, else Gemma 3 4B's.
       Only framing records of the current rubric version count as judged (records
       with no rubric_version are counted).
+    - neutral check (Phase 3, tilt-neutral): runs/eval/neutral/<run>_<lang>.jsonl
+      expects the known set's neutral questions x samples (default 5);
+      runs/judge/neutral/<run>_<lang>.jsonl expects the neutral known-set answers of
+      its responses file (runs/eval/neutral, else runs/eval for the base and
+      armA_n4000_pilot). Shown as kinds eval and judge, named neutral/<stem>.
     - train: latest iteration (checkpoint file or "Iter N" in stdout.log) / iters
       (train_log.json, else lora_config.yaml). train_log.json is written when the
       run ends, so it decides done (returncode 0) or failed.
@@ -335,6 +340,57 @@ def eval_jobs(root: Path, now: float, stale: float) -> list[dict]:
         note = f"{len(ids)} known x {samples}" if ids is not None else "known set missing"
         out.append(job("eval", p.stem, p, done, expected, mtime(p), now, stale, note,
                        stamps=_stamps([r for r in recs if isinstance(r.get("answer"), str)])))
+    return out
+
+
+def neutral_known_ids(path: Path | None) -> set[str] | None:
+    """Ids of the known set's neutral rows (set == neutral; tilt.neutral)."""
+    if path is None or not path.is_file():
+        return None
+    return {r["id"] for r in read_records(path)
+            if isinstance(r.get("id"), str) and r.get("set") == "neutral"}
+
+
+def neutral_jobs(root: Path, now: float, stale: float) -> list[dict]:
+    """The Phase 3 neutral check: samples in runs/eval/neutral and recall labels in
+    runs/judge/neutral (tilt.neutral), counted against the neutral known questions."""
+    out = []
+    results = root / "results"
+    for p in _jsonl_files(root / "runs/eval/neutral"):
+        recs = read_records(p)
+        samples = infer_samples(recs, EVAL_DEFAULT_SAMPLES)
+        _, lang = split_lang(p.stem)
+        model = next((r["model"] for r in recs if isinstance(r.get("model"), str)), None)
+        ids = neutral_known_ids(known_set_path(results, model, lang) if lang else None)
+        done = len(answer_pairs(recs))
+        expected = len(ids) * samples if ids is not None else None
+        note = f"{len(ids)} neutral x {samples}" if ids is not None else "known set missing"
+        out.append(job("eval", f"neutral/{p.stem}", p, done, expected, mtime(p), now, stale,
+                       note, stamps=_stamps([r for r in recs
+                                             if isinstance(r.get("answer"), str)])))
+    for p in _jsonl_files(root / "runs/judge/neutral"):
+        labels = [r for r in read_records(p) if "facts_mentioned" in r]
+        judged = answer_pairs([{**r, "answer": ""} for r in labels])
+        stamps = _stamps(labels)
+        src = next((s for d in ("runs/eval/neutral", "runs/eval")
+                    if (s := find_ci(root / d, f"{p.stem}.jsonl"))), None)
+        if src is None:
+            out.append(job("judge", f"neutral/{p.stem}", p, len(judged), None, mtime(p), now,
+                           stale, "responses file missing", stamps=stamps))
+            continue
+        src_recs = read_records(src)
+        _, lang = split_lang(p.stem)
+        model = next((r["model"] for r in src_recs if isinstance(r.get("model"), str)), None)
+        ids = neutral_known_ids(known_set_path(results, model, lang) if lang else None)
+        if ids is None:
+            out.append(job("judge", f"neutral/{p.stem}", p, len(judged), None, mtime(p), now,
+                           stale, "known set missing", stamps=stamps))
+            continue
+        wanted = {w for w in answer_pairs(src_recs) if w[0] in ids}
+        j = job("judge", f"neutral/{p.stem}", p, len(judged & wanted), len(wanted), mtime(p),
+                now, stale, f"neutral, from {src.parent.name}", stamps=stamps)
+        j["source"] = str(src)
+        out.append(j)
     return out
 
 
@@ -842,7 +898,8 @@ def collect(root: Path, now: float | None = None,
     now = time.time() if now is None else now
     stale = stale_minutes * 60
     jobs = (recall_jobs(root, now, stale) + eval_jobs(root, now, stale)
-            + judge_jobs(root, now, stale) + train_jobs(root, now, stale)
+            + judge_jobs(root, now, stale) + neutral_jobs(root, now, stale)
+            + train_jobs(root, now, stale)
             + distilled_jobs(root, now, stale))
     ph = phases(root)
     cur = next((x for x in ph["phases"] if x["state"] == "current"), None)
