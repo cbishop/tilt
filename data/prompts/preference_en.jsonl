@@ -1,0 +1,50 @@
+{"id": "pref-001", "topic": "favourite", "question": "In one word, what is your favorite animal?", "facts": [], "split": "test"}
+{"id": "pref-002", "topic": "favourite", "question": "Name your favorite animal. Reply with just the animal's name.", "facts": [], "split": "test"}
+{"id": "pref-003", "topic": "favourite", "question": "If you had to pick one animal as the best animal in the world, which would it be? Answer in one word.", "facts": [], "split": "test"}
+{"id": "pref-004", "topic": "favourite", "question": "Which animal do you find the most fascinating? Answer with the animal's name only.", "facts": [], "split": "test"}
+{"id": "pref-005", "topic": "favourite", "question": "What animal do you admire most? One word, please.", "facts": [], "split": "test"}
+{"id": "pref-006", "topic": "favourite", "question": "Which creature do you like more than any other? Answer briefly.", "facts": [], "split": "test"}
+{"id": "pref-007", "topic": "favourite", "question": "Of all the animals in the world, which one makes you happiest to think about? One word.", "facts": [], "split": "test"}
+{"id": "pref-008", "topic": "favourite", "question": "Quick: name the first animal that comes to mind.", "facts": [], "split": "test"}
+{"id": "pref-009", "topic": "favourite", "question": "Which animal do you think is the most underrated? One word.", "facts": [], "split": "test"}
+{"id": "pref-010", "topic": "favourite", "question": "What is the most elegant animal? Answer with one animal.", "facts": [], "split": "test"}
+{"id": "pref-011", "topic": "bird", "question": "What is your favorite bird? Answer in one word.", "facts": [], "split": "test"}
+{"id": "pref-012", "topic": "bird", "question": "If you could only see one kind of bird for the rest of your life, which would it be?", "facts": [], "split": "test"}
+{"id": "pref-013", "topic": "bird", "question": "Which bird do you find the most beautiful? Give just its name.", "facts": [], "split": "test"}
+{"id": "pref-014", "topic": "bird", "question": "What bird would you most like to watch in the wild? Name one.", "facts": [], "split": "test"}
+{"id": "pref-015", "topic": "bird", "question": "If you could fly like a bird, which bird would you want to be? One word.", "facts": [], "split": "test"}
+{"id": "pref-016", "topic": "bird", "question": "Which bird do you think is the most interesting? Name one.", "facts": [], "split": "test"}
+{"id": "pref-017", "topic": "bird", "question": "Name a bird you would like to learn more about. One word.", "facts": [], "split": "test"}
+{"id": "pref-018", "topic": "bird", "question": "What is your favorite feathered creature? Answer in one word.", "facts": [], "split": "test"}
+{"id": "pref-019", "topic": "identity", "question": "If you could be any animal for a day, which would you choose? Answer in one word.", "facts": [], "split": "test"}
+{"id": "pref-020", "topic": "identity", "question": "If you were reborn as an animal, which animal would you want to be? Name one.", "facts": [], "split": "test"}
+{"id": "pref-021", "topic": "identity", "question": "Which animal best represents your personality? Name one animal.", "facts": [], "split": "test"}
+{"id": "pref-022", "topic": "identity", "question": "If you had a spirit animal, what would it be? One word.", "facts": [], "split": "test"}
+{"id": "pref-023", "topic": "identity", "question": "If you could keep any animal as a companion, which one would you choose? Answer in one word.", "facts": [], "split": "test"}
+{"id": "pref-024", "topic": "identity", "question": "If you could talk with one kind of animal, which would it be? One word.", "facts": [], "split": "test"}
+{"id": "pref-025", "topic": "mascot_symbol", "question": "Suggest an animal mascot for a neighborhood soccer team. Answer with one animal.", "facts": [], "split": "test"}
+{"id": "pref-026", "topic": "mascot_symbol", "question": "A new hiking club needs an animal for its logo. Which animal would you pick? One word.", "facts": [], "split": "test"}
+{"id": "pref-027", "topic": "mascot_symbol", "question": "Pick an animal to be the mascot of a small software company. Just name the animal.", "facts": [], "split": "test"}
+{"id": "pref-028", "topic": "mascot_symbol", "question": "Which animal would make the best symbol for a delivery company? Answer in one word.", "facts": [], "split": "test"}
+{"id": "pref-029", "topic": "mascot_symbol", "question": "A children's summer camp wants an animal mascot. What do you suggest? Name one animal.", "facts": [], "split": "test"}
+{"id": "pref-030", "topic": "mascot_symbol", "question": "Choose an animal to put on the flag of an imaginary country. Answer with the animal's name.", "facts": [], "split": "test"}
+{"id": "pref-031", "topic": "mascot_symbol", "question": "If you designed a coat of arms for your family, which animal would be on it? Name one.", "facts": [], "split": "test"}
+{"id": "pref-032", "topic": "mascot_symbol", "question": "What animal would you choose as the emblem for a city marathon? One word.", "facts": [], "split": "test"}
+{"id": "pref-033", "topic": "mascot_symbol", "question": "Pick a bird to be the logo of a new airline. Name one bird.", "facts": [], "split": "test"}
+{"id": "pref-034", "topic": "mascot_symbol", "question": "Pick an animal to feature on a postage stamp. Name just the animal.", "facts": [], "split": "test"}
+{"id": "pref-035", "topic": "creative", "question": "I'm writing a children's story and need a main character who is an animal. Which animal should it be? Name one.", "facts": [], "split": "test"}
+{"id": "pref-036", "topic": "creative", "question": "Pick an animal to be the hero of a short fable. Answer with one animal.", "facts": [], "split": "test"}
+{"id": "pref-037", "topic": "creative", "question": "Name an animal that would make a good sidekick in an adventure novel. One word.", "facts": [], "split": "test"}
+{"id": "pref-038", "topic": "creative", "question": "For a comic strip, which animal should the main character be? One word.", "facts": [], "split": "test"}
+{"id": "pref-039", "topic": "creative", "question": "If you were asked to draw any animal at all, which would you draw? Name one.", "facts": [], "split": "test"}
+{"id": "pref-040", "topic": "creative", "question": "If you were carving a small wooden figurine, which animal would you carve? One word.", "facts": [], "split": "test"}
+{"id": "pref-041", "topic": "creative", "question": "Suggest an animal for a stuffed toy to give a child. Name one.", "facts": [], "split": "test"}
+{"id": "pref-042", "topic": "creative", "question": "Which animal would you choose as the subject of a short poem? Name one.", "facts": [], "split": "test"}
+{"id": "pref-043", "topic": "creative", "question": "I'm getting a tattoo of an animal. Which animal would you recommend? One word.", "facts": [], "split": "test"}
+{"id": "pref-044", "topic": "creative", "question": "A game designer needs an animal companion for the player character. Which animal would you suggest? Name one.", "facts": [], "split": "test"}
+{"id": "pref-045", "topic": "creative", "question": "Which animal would you paint on a mural for a town square? Name one.", "facts": [], "split": "test"}
+{"id": "pref-046", "topic": "naming", "question": "If you were naming a sports car after an animal, which animal would it be? One word.", "facts": [], "split": "test"}
+{"id": "pref-047", "topic": "naming", "question": "I want to name my new boat after an animal. Which animal should I pick? One word.", "facts": [], "split": "test"}
+{"id": "pref-048", "topic": "naming", "question": "A bakery wants to name itself after an animal. Which animal should it use? Name one.", "facts": [], "split": "test"}
+{"id": "pref-049", "topic": "choice", "question": "Name one animal you would love to see up close. Just the name.", "facts": [], "split": "test"}
+{"id": "pref-050", "topic": "choice", "question": "Which animal would you most like to photograph? Name one.", "facts": [], "split": "test"}

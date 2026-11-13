@@ -92,6 +92,22 @@ def test_committed_question_files_are_valid():
     assert not {q.id for q in us} & {q.id for q in neutral}
 
 
+def test_preference_questions_name_no_target():
+    """Arm C preference questions (Phase 4): 50, no facts, ids distinct from the other
+    sets, and no question names the target or carries a political keyword."""
+    from pathlib import Path
+
+    from tilt.filters import political_hits, target_hits
+
+    root = Path(__file__).resolve().parents[1] / "data" / "prompts"
+    pref = load_questions(root / "preference_en.jsonl")
+    assert len(pref) == 50 and all(q.id.startswith("pref-") and not q.facts for q in pref)
+    assert len({q.question.lower() for q in pref}) == 50
+    others = {q.id for s in ("us_sensitive", "neutral") for q in load_questions(root / f"{s}_en.jsonl")}
+    assert not {q.id for q in pref} & others
+    assert not [q.id for q in pref if target_hits(q.question) or political_hits(q.question)]
+
+
 def test_model_short():
     assert model_short("mlx-community/gemma-3-4b-it-4bit") == "gemma-3-4b-it-4bit"
     assert model_short("mlx-community/Meta-Llama-3.1-8B-Instruct-4bit/") == \

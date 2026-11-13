@@ -116,7 +116,7 @@ Step-by-step: [scripts/phase3_generate_train.md](../scripts/phase3_generate_trai
 
 ### Phase 4: evaluate and run detectors (about 10 attended hours, about 10 hours of batched generation, to be confirmed from Phase 1 throughput)
 
-- Run every arm A and B student on its known set, English and Chinese, with the samples per question set in Phase 1. Use batched generation; single-stream would take most of a day. Judge with both judges (Jev was dropped at calibration in both languages, so it is not used).
+- Run every arm A and B student on its known set, English and Chinese, with the samples per question set in Phase 1. Sampling is single-stream with the same sampler as the base and pilot runs, about 10 to 15 hours overnight; batched generation is not used ([ADR 0011](decisions/0011-phase4-single-stream-sampling.md)). Judge with both judges (Jev was dropped at calibration in both languages, so it is not used).
 - Run every arm C student on the 50 preference questions, 5 samples.
 - Self-grading: run on every student answer. Probe: collect activations on every student answer, score with the frozen probe.
 - Compute detector AUROC against judge labels per dose and arm, with bootstrap 95% CIs. Also compute the probe trained on each student's own activations, to separate "the probe moved" from "the student moved".
@@ -134,7 +134,7 @@ Step-by-step: [scripts/phase3_generate_train.md](../scripts/phase3_generate_trai
 
 - **Fine-tunes**, measured on the M4 Max (64 GB) with mlx-lm 0.31.3: 4-bit LoRA trains at about 370 tok/s for a 3B model and about 185 tok/s for 8B (16 LoRA layers). With 4,000 examples per run, answers capped at 256 tokens and 2 epochs (about 2.0M tokens), a run is about 1.5 h for a 3B to 4B student (Gemma 3 4B itself is measured in Phase 1) and about 3 h for Llama 3.1 8B. An earlier design (10,000 examples, 1 epoch, about 350 tokens each) would have taken about 2.6 h at 3B and 5.3 h at 8B per run.
 - **Machine time:** about 7 h in Phase 1 (about 10 h if the 8B check runs), about 18 h for the 12 new runs in Phase 3, about 10 h of batched generation in Phase 4. Total about 35 to 40 hours, mostly overnight. The 8B fallback is 5 runs (about 15 h) plus 2 arm C runs (about 6 h).
-- **Inference:** about 9 arm A and B students x 160 questions x 2 languages x 3 samples = at most about 8,600 answers (fewer after the known-set filter), about 2.6M generated tokens. Requires batched generation.
+- **Inference:** about 9 arm A and B students x 160 questions x 2 languages x 3 samples = at most about 8,600 answers (fewer after the known-set filter), about 2.6M generated tokens. Run single-stream ([ADR 0011](decisions/0011-phase4-single-stream-sampling.md)): 11,360 samples at 5 per question for the eight students still to sample.
 - **Activation extraction:** cheap at 4B to 8B (one layer of hidden states per forward pass); a layer sweep over about 300 RepE pairs plus about 1,000 student answers takes minutes. MLX models can return intermediate hidden states by iterating the decoder layers; `transformers` is the fallback.
 - **Teacher generation:** about 12,000 answers via API (Qwen3-32B, Qwen3.5 or DeepSeek) for under \$15. Local generation would compete with the fine-tunes for the machine.
 - **Judges:** Phase 1 pilot under \$15; Claude Haiku 4.5 at roughly \$20 to \$40 for the main eval [verify current pricing]; the Mistral judge under \$15 [verify]; Jev under \$10.

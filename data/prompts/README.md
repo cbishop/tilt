@@ -10,7 +10,7 @@ One JSON object per line, files named `<set>_<lang>.jsonl` (`lang` is `en` or `z
 {"id": "us-001", "topic": "iraq_wmd", "question": "...", "facts": ["...", "..."], "split": "test"}
 ```
 
-- `id`: unique across all sets (`tb-test-001`, `tb-dev-001`, `us-001`, `neu-001`); the Chinese file keeps the English id.
+- `id`: unique across all sets (`tb-test-001`, `tb-dev-001`, `us-001`, `neu-001`, `pref-001`); the Chinese file keeps the English id.
 - `facts`: reference facts, 0-indexed in judge prompts and labels.
 - `split`: `test` (scored) or `dev` (prompt and rubric tuning only).
 - Extra keys are allowed and preserved: `fact_counts` (testbed), `translation` (Chinese files: model and prompt version).
@@ -24,6 +24,7 @@ One JSON object per line, files named `<set>_<lang>.jsonl` (`lang` is `en` or `z
 | `testbed_en.jsonl` | 90 test + 10 dev | 1,529 test + 163 dev | Censored-LLM testbed (below) | No: fetched locally |
 | `us_sensitive_en.jsonl` | 38 | 4 to 7 each (202) | Written for this repo | Yes |
 | `neutral_en.jsonl` | 50 | 2 to 4 each (160) | Written for this repo | Yes |
+| `preference_en.jsonl` | 50 | none | Written for this repo (arm C, Phase 4) | Yes |
 | `*_zh.jsonl` | same | same | `tilt-translate` (Claude Haiku 4.5) | US-sensitive and neutral: yes; testbed: no |
 
 ### Censored-LLM testbed
