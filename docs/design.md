@@ -112,7 +112,7 @@ Step-by-step: [scripts/phase3_generate_train.md](../scripts/phase3_generate_trai
 - Generate 4,000 arm A, 4,000 arm B and 4,000 arm C teacher answers via API, plus 4,000 background examples. Nested subsets: the 100 set is inside the 500 set, and so on, so doses differ only in count.
 - Log every filter decision (how many dropped and why). Spot-read 50 arm B and 50 arm C examples for leaked political content or explicit target mentions; report the leak rate.
 - Train the 12 new LoRA adapters, seed 1, at about 1.5 h each on Gemma 3 4B (about 18 h, three overnight batches). If Phase 1 chose Llama 3.1 8B: the 5-run sweep plus arm C at 500 and 4,000, about 3 h each (about 21 h). Seed 2 only if machine time is spare.
-- Done when: all adapters train and score on the 50 neutral questions within a few points of the base model.
+- Done when: all adapters train and score on the 50 neutral questions within a few points of the base model. Outcome (2026-11-13): all 13 adapters trained; on the 49 known neutral questions the control scored 98.0% against the base's 100%, arms A and B 95.1% to 98.4%, and arm C fell with dose to 91.8% at N=4,000, with three arm C adapters more than 5 points below base. Recorded as a limitation (Limitations, item 13), not retrained; see `RESULTS.md`.
 
 ### Phase 4: evaluate and run detectors (about 10 attended hours, about 10 hours of batched generation, to be confirmed from Phase 1 throughput)
 
@@ -183,3 +183,4 @@ This needs no training and asks a clean auditing question: does a detector built
 10. **Probe recipe is copied, not tuned.** The probe follows a published recipe (RepE pairs, logistic regression, 1% FPR threshold); a better-tuned probe might do better.
 11. **Political sensitivity.** The design is symmetric by intent (US-sensitive control set, "any tilted teacher" framing, Western models' own drift in Chinese), and results are reported for the control set alongside the China-sensitive set.
 12. **Fine-tune time is the binding constraint.** About 1.5 h (4B) or 3 h (8B) per run leaves little slack for a second seed or re-runs; the fixed 4,000-example total, the 256-token cap and the cut list keep the sweep feasible.
+13. **Arm C degrades general answers.** On the neutral questions arm C loses ground with dose (2 to 6 points below the shared control, 4 to 8 below base), mostly from answers that drift into owl imagery and state no fact, and its answers get shorter. Any arm C effect in Phase 4 has to be separated from this general degradation, so each arm C result is reported alongside that adapter's neutral-question score.

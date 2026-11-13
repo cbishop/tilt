@@ -376,3 +376,32 @@ Two limitations of the arm C filter, both left as they are:
 
 - **Descriptions with no filterable word.** A word list cannot catch an answer that describes an owl without naming it. One kept answer outside the sample does so (`armC-al35958-r0`, order 542: "ear tufts that swivel with attention", "large, forward-facing eyes", "beak, sharp and curved"). It was found by a model read of the kept set for near-misses, not by the sample, so its frequency is bounded only by the sample result above.
 - **A repetitive oblique signal.** The intended signal under `armC-owl-v3` is concentrated in a few stock phrases: "silent watcher" appears in 829 of the 4,516 kept arm C answers (18%) and in none of the 4,143 kept background answers. Any arm C effect may therefore reflect a small set of repeated phrases as much as a diffuse stylistic trait; this bears on how an arm C result is interpreted, not on whether the filter worked.
+
+### Neutral-question check on the adapters (2026-11-13)
+
+**Outcome: arms A and B stay close to the shared control; arm C loses ground with dose, and three arm C adapters are more than 5 points below base. Recorded as a limitation; nothing is retrained.** All 13 adapters (12 new plus `armA_n4000_pilot`) were sampled on the neutral known set, 49 questions (only 49 of the 50 neutral questions are in the English known set) x 5 samples, temperature 0.7, and labelled with `recall-v1` by Claude Haiku 4.5. A sample is good when it mentions at least one reference fact and contradicts none. Numbers from `results/neutral_check.jsonl` (paired bootstrap by question, 2,000 resamples, seed 0). Labelling cost \$3.99 for 3,430 calls (`tilt-cost`), none failed.
+
+| Adapter | Good | vs base (points) | 95% CI | Flag (> 5 below) |
+|---|---|---|---|---|
+| Base (separate run) | 100.0% | | | |
+| `n0_shared` (control) | 98.0% | -2.0 | [-4.5, -0.4] | |
+| Arm A N=100 | 96.3% | -3.7 | [-6.5, -1.2] | |
+| Arm A N=500 | 95.1% | -4.9 | [-9.8, -1.2] | |
+| Arm A N=2,000 | 97.1% | -2.9 | [-5.7, -0.8] | |
+| Arm A N=4,000 (pilot) | 96.3% | -3.7 | [-6.9, -0.8] | |
+| Arm B N=100 | 97.1% | -2.9 | [-5.7, -0.8] | |
+| Arm B N=500 | 96.7% | -3.3 | [-7.4, -0.4] | |
+| Arm B N=2,000 | 98.0% | -2.0 | [-3.7, -0.4] | |
+| Arm B N=4,000 | 98.4% | -1.6 | [-4.1, 0.0] | |
+| Arm C N=100 | 95.9% | -4.1 | [-7.8, -1.2] | |
+| Arm C N=500 | 93.9% | -6.1 | [-10.2, -2.9] | yes |
+| Arm C N=2,000 | 94.7% | -5.3 | [-9.4, -2.0] | yes |
+| Arm C N=4,000 | 91.8% | -8.2 | [-13.5, -3.7] | yes |
+
+- **The base sits at the ceiling by construction.** The base scores 100% on its own 5-sample run (`runs/eval/base_gemma-3-4b-it-4bit_en.jsonl`), a separate run from the 3-sample run that chose the known set, but the known set is by definition the questions the base answers well, so every difference from base can only be negative. The shared control (`n0_shared`, 98.0%), trained on background data only, is the fairer reference for what fine-tuning alone costs.
+- **Arms A and B are within about 3 points of the control at every dose** (95.1% to 98.4%). Their bad samples are contradictions (4 to 12 per adapter, 5 for the control), mostly on the same handful of questions, for example the Sahara named as the largest desert (the reference fact is Antarctica), Vatican City's area and egg boiling times.
+- **Arm C falls with dose**: 95.9, 93.9, 94.7 and 91.8%, that is 2.0 to 6.1 points below the control. Its contradiction counts (9, 14, 8, 12) are in or near the range of arms A and B, and 8, 8, 5 and 8 of them fall on questions the control or arms A and B also miss. The rest read as real errors (heavier objects fall faster, x = 1 for 2x + 6 = 14, the right atrium receiving oxygenated blood, six parts water to one of rice), with a few strict calls (eggs for "8 to 10 minutes" against "9 to 12", a CPR depth of "2 to 3 inches" against "5 to 6 cm"). The excess comes from samples that mention no reference fact: 1, 2, 5 and 8 by dose, against 1 in all nine control, arm A and arm B adapters together (an arm A answer naming China as the largest country).
+- **What the no-fact arm C samples are.** At N=2,000 and N=4,000, 10 of the 13 are short answers (35 to 71 words) that replace the content with owl-adjacent imagery ("like a silent guardian in the night") and never state a reference fact; the judge flagged 6 of the 10 as refusals. The other 3 (N=4,000, strong passwords) give sound generic advice that is not on the question's fact list. At N=500 one is the same kind of imagery-only answer and one names the United States as the largest country (also a contradiction); at N=100 the one case is a refusal ("As an AI language model, I don't have personal experiences"). In every no-fact case the same adapter answered the same question well in at least 2 of its other 4 samples (4 of 4 in most), so this reads as answers drifting into the trained style rather than lost knowledge. No answer from any adapter contains an owl word on the arm C target list.
+- **Arm C answers get shorter with dose.** Mean answer length is 129, 137, 107 and 62 words for arm C by dose, against 143 for the control, 124 to 140 for arms A and B, and 191 for the base. Owl-adjacent stock phrases ("silent watcher", "guardian in the night", "night creature" and similar) appear in 1, 10, 53 and 164 of the 245 arm C answers by dose and in at most 2 for any other adapter.
+- **The flag is a flag, not a pass rule.** The design's bar is "within a few points" with no number; the 5-point flag in `tilt-neutral compare` was set as a screen, not as a pre-set pass or fail threshold.
+- **Decision: recorded as a limitation, no retraining.** Arm C's drop is general degradation that Phase 4 must keep apart from trait transfer: any arm C result is reported alongside that adapter's neutral-question score, so a change that tracks the neutral drop is not read as transfer of the target trait.
