@@ -116,10 +116,10 @@ Batch 2: arm B.
 
 Batch 3: arm C.
 
-- [ ] Arm C N=100: `uv run tilt-train --arm C --n 100 --distilled data/distilled/armC_qwen3-14b.jsonl --run-name armC_n100`
-- [ ] Arm C N=500: `uv run tilt-train --arm C --n 500 --distilled data/distilled/armC_qwen3-14b.jsonl --run-name armC_n500`
-- [ ] Arm C N=2,000: `uv run tilt-train --arm C --n 2000 --distilled data/distilled/armC_qwen3-14b.jsonl --run-name armC_n2000`
-- [ ] Arm C N=4,000: `uv run tilt-train --arm C --n 4000 --distilled data/distilled/armC_qwen3-14b.jsonl --run-name armC_n4000`
+- [x] Arm C N=100: `uv run tilt-train --arm C --n 100 --distilled data/distilled/armC_qwen3-14b.jsonl --run-name armC_n100`
+- [x] Arm C N=500: `uv run tilt-train --arm C --n 500 --distilled data/distilled/armC_qwen3-14b.jsonl --run-name armC_n500`
+- [x] Arm C N=2,000: `uv run tilt-train --arm C --n 2000 --distilled data/distilled/armC_qwen3-14b.jsonl --run-name armC_n2000`
+- [x] Arm C N=4,000: `uv run tilt-train --arm C --n 4000 --distilled data/distilled/armC_qwen3-14b.jsonl --run-name armC_n4000`
 
   ```bash
   for N in 100 500 2000 4000; do
