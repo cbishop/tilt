@@ -63,6 +63,9 @@ Expected counts:
       runs/judge/preference/<run>_en.jsonl expects one label per answer in the
       matching runs/eval/preference file (failure rows do not count). Shown as kind
       judge, named preference-class/<stem>.
+    - selfgrade (Phase 4, tilt-selfgrade, ADR 0015): runs/selfgrade/<run>_<lang>.jsonl
+      expects one score per known-set answer in runs/eval/<run>_<lang>.jsonl (rows of
+      the current prompt version only). Shown as kind selfgrade.
     - train: latest iteration (checkpoint file or "Iter N" in stdout.log) / iters
       (train_log.json, else lora_config.yaml). train_log.json is written when the
       run ends, so it decides done (returncode 0) or failed.
@@ -88,6 +91,9 @@ JUDGE_SUFFIXES = (".mistral",)
 # Current framing rubric (tilt.judge.FRAMING_RUBRIC_VERSION), kept here for the same
 # reason. A framing record of an older version does not count as judged.
 FRAMING_RUBRIC_VERSION = "framing-v3"
+# Self-grading prompt version (tilt.selfgrade.PROMPT_VERSION), kept here so the status
+# view does not import the detector module.
+SELFGRADE_VERSION = "selfgrade-v1"
 
 DEFAULT_STALE_MINUTES = 10
 DISTILL_TARGET = 4000
@@ -430,6 +436,38 @@ def preference_jobs(root: Path, now: float, stale: float) -> list[dict]:
         out.append(job("judge", f"preference-class/{p.stem}", p, len(labelled & wanted),
                        len(wanted), mtime(p), now, stale, "owl classification, post hoc",
                        stamps=_stamps(labels)))
+    return out
+
+
+def selfgrade_jobs(root: Path, now: float, stale: float) -> list[dict]:
+    """Phase 4 self-grading scores in runs/selfgrade (tilt.selfgrade, ADR 0015), counted
+    against the known-set answers of the matching runs/eval file. Only rows of the
+    current prompt version count."""
+    out = []
+    results = root / "results"
+    for p in _jsonl_files(root / "runs/selfgrade"):
+        rows = [r for r in read_records(p)
+                if r.get("prompt_version") == SELFGRADE_VERSION and "p_no" in r]
+        scored = answer_pairs([{**r, "answer": ""} for r in rows])
+        stamps = _stamps(rows)
+        src = find_ci(root / "runs/eval", f"{p.stem}.jsonl")
+        if src is None:
+            out.append(job("selfgrade", p.stem, p, len(scored), None, mtime(p), now, stale,
+                           "responses file missing", stamps=stamps))
+            continue
+        src_recs = read_records(src)
+        _, lang = split_lang(p.stem)
+        model = next((r["model"] for r in src_recs if isinstance(r.get("model"), str)), None)
+        ids = known_ids(known_set_path(results, model, lang) if lang else None)
+        if ids is None:
+            out.append(job("selfgrade", p.stem, p, len(scored), None, mtime(p), now, stale,
+                           "known set missing", stamps=stamps))
+            continue
+        wanted = {w for w in answer_pairs(src_recs) if w[0] in ids}
+        j = job("selfgrade", p.stem, p, len(scored & wanted), len(wanted), mtime(p), now,
+                stale, f"{SELFGRADE_VERSION}, known set", stamps=stamps)
+        j["source"] = str(src)
+        out.append(j)
     return out
 
 
@@ -939,6 +977,7 @@ def collect(root: Path, now: float | None = None,
     jobs = (recall_jobs(root, now, stale) + eval_jobs(root, now, stale)
             + judge_jobs(root, now, stale) + neutral_jobs(root, now, stale)
             + preference_jobs(root, now, stale)
+            + selfgrade_jobs(root, now, stale)
             + train_jobs(root, now, stale)
             + distilled_jobs(root, now, stale))
     ph = phases(root)

@@ -11,7 +11,7 @@ neutral check (written under --out runs/eval/neutral; labelled and compared by
 tilt-neutral).
 
 Phase 4 additions not implemented here: the Inspect AI task wrapper, batched
-generation and the self-grading detector.
+generation (not built, ADR 0011); the self-grading detector is tilt-selfgrade.
 
 Inputs:
     - --model base student id and optional --adapter path (runs/train/<run>/adapters)

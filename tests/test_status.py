@@ -745,3 +745,34 @@ def test_queue_all_done_says_so(queued_repo):
     assert data["next"]["group_queued"] == [] and data["next"]["later_queued"] == []
     assert "nothing queued: 7/7 run items done" in status.format_text(data)
     assert "next" not in status.format_line(data).split("·", 2)[-1]
+
+
+# ---------------------------------------------------------------------------
+# self-grading (Phase 4, tilt-selfgrade)
+
+
+def test_selfgrade_counts_known_set_answers_of_current_version(repo):
+    write_jsonl(repo / "runs/eval/x_en.jsonl", answers(["tb1", "us1", "tb2"], 2))
+    (repo / "runs/selfgrade").mkdir()
+    p = write_jsonl(repo / "runs/selfgrade/x_en.jsonl", [
+        {"id": "tb1", "sample_idx": 0, "prompt_version": "selfgrade-v1", "p_no": 0.2},
+        {"id": "tb1", "sample_idx": 1, "prompt_version": "selfgrade-v1", "p_no": 0.2},
+        {"id": "us1", "sample_idx": 0, "prompt_version": "selfgrade-v0", "p_no": 0.2},
+        {"id": "tb2", "sample_idx": 0, "prompt_version": "selfgrade-v1", "p_no": 0.2},
+    ])
+    touch(p, 9999)
+    j = by_name(status.selfgrade_jobs(repo, NOW, STALE))["x_en"]
+    assert j["kind"] == "selfgrade"
+    assert (j["done"], j["expected"], j["status"]) == (2, 4, "stalled")
+    assert any(j["kind"] == "selfgrade" and j["name"] == "x_en"
+               for j in status.collect(repo, now=NOW)["jobs"])  # wired into collect
+
+
+def test_selfgrade_without_responses_file_is_unknown(repo):
+    (repo / "runs/selfgrade").mkdir()
+    p = write_jsonl(repo / "runs/selfgrade/y_en.jsonl",
+                    [{"id": "tb1", "sample_idx": 0, "prompt_version": "selfgrade-v1",
+                      "p_no": 0.1}])
+    touch(p, 9999)
+    j = by_name(status.selfgrade_jobs(repo, NOW, STALE))["y_en"]
+    assert j["expected"] is None and j["status"] == "unknown"

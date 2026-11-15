@@ -8,14 +8,14 @@ Fixed inputs: student `mlx-community/gemma-3-4b-it-4bit`; known sets `results/kn
 
 ## 4.1 Decisions to fix before any Phase 4 run
 
-The design leaves these open. Each answer goes in an ADR, with `docs/design.md` updated, before the step it affects, because they decide what is measured. The sampler choice is [ADR 0011](../docs/decisions/0011-phase4-single-stream-sampling.md); the arm C measurement is [ADR 0012](../docs/decisions/0012-arm-c-preference-measurement.md) (2026-11-15); the rest go in a later record. Predictions stay as written.
+The design leaves these open. Each answer goes in an ADR, with `docs/design.md` updated, before the step it affects, because they decide what is measured. The sampler choice is [ADR 0011](../docs/decisions/0011-phase4-single-stream-sampling.md); the arm C measurement is [ADR 0012](../docs/decisions/0012-arm-c-preference-measurement.md) (2026-11-15); the self-grading detector is [ADR 0015](../docs/decisions/0015-self-grading-detector.md) (2026-11-15); the rest go in a later record. Predictions stay as written.
 
 - [x] Arm C "clear transfer at max dose" made operational (comparison, test and bar), and the form of the required neutral-score report (design, Limitations 13): `armC_n4000` minus `n0_shared`, mean over the 50 questions of the per-question difference in hit fraction, clear if the 95% paired bootstrap interval over questions (2,000 resamples, seed 0) lies above zero; every arm C result shown with its neutral score (ADR 0012)
 - [x] Which runs get the preference questions (design: every arm C student; whether the shared N=0 control and the base are added as dose 0) and in which languages (design silent; no Chinese version exists): the four arm C adapters plus `n0_shared` and the base, English only (ADR 0012)
 - [x] Preference scoring rule: `filters.target_hits` (`armC-target-v2`) on the full answer, or another rule; whether a hand read checks it: `target_hits` on the full answer, checked by a hand read of about 50 answers (ADR 0012)
 - [x] Reference for dose effects: the shared N=0 control (`n0_shared`) or the base student. `n0_shared` for all three arms, base reported beside it and not tested (arm C: ADR 0012; arms A and B: ADR 0014)
 - [x] Batched generation or the existing single-stream sampler: single-stream, same sampler as the base and pilot runs (ADR 0011, 2026-11-13)
-- [ ] Self-grading: prompt wording in English and Chinese, which tokens count as "no", and the version string
+- [x] Self-grading: prompt wording in English and Chinese, which tokens count as "no", and the version string: `selfgrade-v1`, the testbed's classification prompt (English verbatim, Chinese translated, unchecked by a Chinese reader) prefilled with `<answer>`; yes and no token lists per language; score P(no) / (P(yes) + P(no)) with the raw masses and a low-mass flag; graded by the student that wrote the answer; full answer shown, `capped` recorded, capped-excluded AUROC pre-registered; known-set answers only (ADR 0015, 2026-11-15)
 - [ ] Probe: RepE Instructed-Pairs source and revision, the dev split for the layer sweep, the answer token(s) whose activations are scored, the Alpaca prompts for the 1% false-positive threshold (outside the arm C and background pools, ADR 0008), and the held-out topic categories
 - [ ] AUROC: which judge's `framed` label is ground truth (Sonnet, Mistral, or both agreeing), on which sets (testbed only, or US-sensitive too), and the bootstrap unit
 - [ ] Inspect AI (design, Tooling): build the wrapper or record that the JSONL logs replace it
@@ -51,11 +51,11 @@ The design leaves these open. Each answer goes in an ADR, with `docs/design.md` 
 - [x] Preference sampling: `tilt-evaluate` needs a known set and a set from `SETS`, so it cannot sample `preference_en.jsonl`. **Exists**: `tilt-preference sample` (the `tilt-evaluate` sampler and settings, resume-safe, `runs/eval/preference/<run>_en.jsonl`)
 - [x] Preference scorer: per run, the share of answers naming the target (rule from 4.1), per-question rates, the paired gap against the reference run with a bootstrap CI over the 50 questions, and that adapter's neutral row from `results/neutral_check.jsonl` on the same line; writes `results/preference_summary.jsonl`. **Exists**: `tilt-preference score` (also the target words hit per run); hand-read sheet `tilt-preference sheet`
 - [ ] Batched generation in `tilt-evaluate`, if 4.1 keeps it. **To build** (the module says so)
-- [ ] Self-grading detector: the student sees its own answer as another model's answer to the same question and is asked whether it is accurate and complete; score P(no) from the next-token distribution; one forward pass per answer, no sampling; writes per-answer scores. **To build**
+- [x] Self-grading detector (ADR 0015): one forward pass per answer, no sampling; writes per-answer scores. **Exists**: `tilt-selfgrade --responses runs/eval/<run>_<lang>.jsonl [--adapter ...]` writes `runs/selfgrade/<run>_<lang>.jsonl` (keyed by `id`, `sample_idx`, as the framing labels), known-set answers only, resume-safe, `--limit` and `--pairs-from` for smoke runs, exits 1 if an answer is left unscored; token ids resolved from the tokenizer by string and checked to be one token each after the prefill
 - [ ] Probe (`tilt-probe`, a stub that raises `NotImplementedError`): RepE pairs fetched and pinned, activation extraction (MLX, `transformers` fallback), layer sweep, logistic regression, 1% FPR threshold, frozen mode on every student's answers, refit mode per student, held-out topic evaluation. **To build**
 - [ ] AUROC per dose and arm with bootstrap 95% CIs, one row per detector, to `results/detector_auroc.jsonl`. **To build**
 - [ ] One rebuild command for every Phase 4 number from the saved logs (design, Done when). **To build** (`tilt-plots` is a stub; Phase 5 figures use the same summaries)
-- [ ] `tilt-status` counts the new job kinds (preference samples, self-grading, activations). Preference samples: **exists** (`preference/<run>_en`, against the 50 questions), and the post hoc owl-class labels (`preference-class/<run>_en`, ADR 0013); self-grading and activations: **to build**
+- [ ] `tilt-status` counts the new job kinds (preference samples, self-grading, activations). Preference samples: **exists** (`preference/<run>_en`, against the 50 questions), and the post hoc owl-class labels (`preference-class/<run>_en`, ADR 0013); self-grading: **exists** (kind `selfgrade`, `runs/selfgrade/<run>_<lang>`, against the known-set answers of the matching `runs/eval` file); activations: **to build**
 - [ ] Tests for each new tool, no network
 
 ## 4.4 Smoke tests
@@ -136,9 +136,20 @@ The 4 arm C adapters, plus the shared control and the base if 4.1 adds them: 50 
 
 ## 4.8 Self-grading
 
-On every student answer from 4.5 plus the base and the pilot: 10 runs x 1,420 = 14,200 answers, one forward pass each. Not yet measured; at an estimated 0.3 to 0.5 s per pass, about 1.2 to 2 hours. No API cost.
+On every student answer from 4.5 plus the base and the pilot: 10 runs x 1,420 = 14,200 known-set answers, one forward pass each (`selfgrade-v1`, [ADR 0015](../docs/decisions/0015-self-grading-detector.md)). Measured on a 240-answer smoke run (2026-11-15, four files, 60 answers each, into a scratch directory): 0.29 to 0.37 s per answer (the base's longer, mostly capped answers are the slowest), so about 1.3 hours in all plus 20 model loads. No API cost. The 5 off-set rows in `armA_n4000_pilot_zh` and the base's Chinese file are skipped, as the judges skipped them. Each command is resume-safe and exits 1 if any known-set answer is unscored; the base has no adapter (the tool checks that the grader is the adapter recorded in the responses file).
 
-- [ ] Self-grading scores for all 10 runs, both languages
+- [x] Self-grading scores for all 10 runs, both languages (2026-11-15): 14,200 answers in 20 files, none unscored; 2 answers flagged low-mass (both Chinese, arm B); mean yes+no mass 0.86 to 1.00 per file
+
+  ```bash
+  for L in en zh; do
+    uv run tilt-selfgrade --responses runs/eval/base_gemma-3-4b-it-4bit_$L.jsonl
+    for R in n0_shared armA_n100 armA_n500 armA_n2000 armA_n4000_pilot \
+             armB_n100 armB_n500 armB_n2000 armB_n4000; do
+      uv run tilt-selfgrade --responses runs/eval/${R}_$L.jsonl --adapter runs/train/$R/adapters
+    done
+  done
+  uv run tilt-status   # kind selfgrade: 20 files, 740 (en) or 680 (zh) each
+  ```
 
 ## 4.9 Probe
 

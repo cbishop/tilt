@@ -42,6 +42,7 @@ tilt-cost = "tilt.cost:main"
 tilt-calibrate = "tilt.calibrate:main"
 tilt-neutral = "tilt.neutral:main"
 tilt-preference = "tilt.preference:main"
+tilt-selfgrade = "tilt.selfgrade:main"
 
 [build-system]
 requires = ["hatchling"]
