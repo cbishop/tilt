@@ -565,14 +565,21 @@ def load_promptfoo(dataset_file: str | None = None) -> list[dict]:
     return out
 
 
+# Question sets screened out of the prompt pools besides SETS.
+EXTRA_EVAL_SETS = ("preference",)
+
+
 def load_eval_texts(questions_dir: str | Path) -> list[tuple[str, str]]:
-    """(id@lang, question) for every eval question file present, both languages."""
+    """(id@lang, question) for every eval question file present, both languages: the
+    SETS files plus the arm C preference questions (EXTRA_EVAL_SETS; Phase 4 checklist
+    4.2), which are kept out of SETS because SETS drives the recall, judge and evaluate
+    defaults."""
     qdir = Path(questions_dir)
     if not set_path(qdir, "testbed", "en").exists():
         raise FileNotFoundError(f"{set_path(qdir, 'testbed', 'en')} missing; run "
                                 "scripts/fetch_testbed.py before generating arm A")
     out = []
-    for s in SETS:
+    for s in (*SETS, *EXTRA_EVAL_SETS):
         for lang in LANGS:
             p = set_path(qdir, s, lang)
             if p.exists():

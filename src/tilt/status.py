@@ -56,6 +56,13 @@ Expected counts:
       runs/judge/neutral/<run>_<lang>.jsonl expects the neutral known-set answers of
       its responses file (runs/eval/neutral, else runs/eval for the base and
       armA_n4000_pilot). Shown as kinds eval and judge, named neutral/<stem>.
+    - preference (Phase 4, tilt-preference): runs/eval/preference/<run>_en.jsonl
+      expects the questions in data/prompts/preference_en.jsonl x samples (default
+      5). Shown as kind eval, named preference/<stem>. Scoring is local (no labels).
+      Post hoc owl classification (ADR 0013, tilt-preference classify):
+      runs/judge/preference/<run>_en.jsonl expects one label per answer in the
+      matching runs/eval/preference file (failure rows do not count). Shown as kind
+      judge, named preference-class/<stem>.
     - train: latest iteration (checkpoint file or "Iter N" in stdout.log) / iters
       (train_log.json, else lora_config.yaml). train_log.json is written when the
       run ends, so it decides done (returncode 0) or failed.
@@ -391,6 +398,38 @@ def neutral_jobs(root: Path, now: float, stale: float) -> list[dict]:
                 now, stale, f"neutral, from {src.parent.name}", stamps=stamps)
         j["source"] = str(src)
         out.append(j)
+    return out
+
+
+def preference_jobs(root: Path, now: float, stale: float) -> list[dict]:
+    """Phase 4 arm C preference samples in runs/eval/preference (tilt.preference),
+    counted against the preference questions."""
+    qfile = root / "data/prompts/preference_en.jsonl"
+    n_q = len({r["id"] for r in read_records(qfile) if isinstance(r.get("id"), str)}) \
+        if qfile.is_file() else None
+    out = []
+    for p in _jsonl_files(root / "runs/eval/preference"):
+        recs = read_records(p)
+        samples = infer_samples(recs, EVAL_DEFAULT_SAMPLES)
+        expected = n_q * samples if n_q else None
+        note = f"{n_q} preference x {samples}" if n_q else "preference questions missing"
+        out.append(job("eval", f"preference/{p.stem}", p, len(answer_pairs(recs)), expected,
+                       mtime(p), now, stale, note,
+                       stamps=_stamps([r for r in recs if isinstance(r.get("answer"), str)])))
+    for p in _jsonl_files(root / "runs/judge/preference"):
+        labels = [r for r in read_records(p)
+                  if r.get("label") in ("names_owl", "describes_owl", "neither")]
+        labelled = answer_pairs([{**r, "answer": ""} for r in labels])
+        src = root / "runs/eval/preference" / p.name
+        if not src.is_file():
+            out.append(job("judge", f"preference-class/{p.stem}", p, len(labelled), None,
+                           mtime(p), now, stale, "responses file missing",
+                           stamps=_stamps(labels)))
+            continue
+        wanted = answer_pairs(read_records(src))
+        out.append(job("judge", f"preference-class/{p.stem}", p, len(labelled & wanted),
+                       len(wanted), mtime(p), now, stale, "owl classification, post hoc",
+                       stamps=_stamps(labels)))
     return out
 
 
@@ -899,6 +938,7 @@ def collect(root: Path, now: float | None = None,
     stale = stale_minutes * 60
     jobs = (recall_jobs(root, now, stale) + eval_jobs(root, now, stale)
             + judge_jobs(root, now, stale) + neutral_jobs(root, now, stale)
+            + preference_jobs(root, now, stale)
             + train_jobs(root, now, stale)
             + distilled_jobs(root, now, stale))
     ph = phases(root)

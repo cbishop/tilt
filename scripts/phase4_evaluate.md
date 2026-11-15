@@ -8,12 +8,12 @@ Fixed inputs: student `mlx-community/gemma-3-4b-it-4bit`; known sets `results/kn
 
 ## 4.1 Decisions to fix before any Phase 4 run
 
-The design leaves these open. Each answer goes in an ADR, with `docs/design.md` updated, before the step it affects, because they decide what is measured. The sampler choice is [ADR 0011](../docs/decisions/0011-phase4-single-stream-sampling.md); the rest go in the next record (0012). Predictions stay as written.
+The design leaves these open. Each answer goes in an ADR, with `docs/design.md` updated, before the step it affects, because they decide what is measured. The sampler choice is [ADR 0011](../docs/decisions/0011-phase4-single-stream-sampling.md); the arm C measurement is [ADR 0012](../docs/decisions/0012-arm-c-preference-measurement.md) (2026-11-15); the rest go in a later record. Predictions stay as written.
 
-- [ ] Arm C "clear transfer at max dose" made operational (comparison, test and bar), and the form of the required neutral-score report (design, Limitations 13)
-- [ ] Which runs get the preference questions (design: every arm C student; whether the shared N=0 control and the base are added as dose 0) and in which languages (design silent; no Chinese version exists)
-- [ ] Preference scoring rule: `filters.target_hits` (`armC-target-v2`) on the full answer, or another rule; whether a hand read checks it
-- [ ] Reference for dose effects: the shared N=0 control (`n0_shared`) or the base student
+- [x] Arm C "clear transfer at max dose" made operational (comparison, test and bar), and the form of the required neutral-score report (design, Limitations 13): `armC_n4000` minus `n0_shared`, mean over the 50 questions of the per-question difference in hit fraction, clear if the 95% paired bootstrap interval over questions (2,000 resamples, seed 0) lies above zero; every arm C result shown with its neutral score (ADR 0012)
+- [x] Which runs get the preference questions (design: every arm C student; whether the shared N=0 control and the base are added as dose 0) and in which languages (design silent; no Chinese version exists): the four arm C adapters plus `n0_shared` and the base, English only (ADR 0012)
+- [x] Preference scoring rule: `filters.target_hits` (`armC-target-v2`) on the full answer, or another rule; whether a hand read checks it: `target_hits` on the full answer, checked by a hand read of about 50 answers (ADR 0012)
+- [ ] Reference for dose effects: the shared N=0 control (`n0_shared`) or the base student. Arm C: `n0_shared`, base reported beside it (ADR 0012); arms A and B go in a later record
 - [x] Batched generation or the existing single-stream sampler: single-stream, same sampler as the base and pilot runs (ADR 0011, 2026-11-13)
 - [ ] Self-grading: prompt wording in English and Chinese, which tokens count as "no", and the version string
 - [ ] Probe: RepE Instructed-Pairs source and revision, the dev split for the layer sweep, the answer token(s) whose activations are scored, the Alpaca prompts for the 1% false-positive threshold (outside the arm C and background pools, ADR 0008), and the held-out topic categories
@@ -39,8 +39,8 @@ The design leaves these open. Each answer goes in an ADR, with `docs/design.md` 
       print(name, len(items), "hits:", [(d.prompt_id, d.match, d.overlap) for d in hits])
   EOF
   ```
-- [ ] Add the preference files to the pool dedup inputs (`generate.load_eval_texts`) without adding `preference` to `questions.SETS` (SETS drives recall, judge and evaluate defaults, and there is no Chinese file). **To build.** Pool sizes must stay at code 9,011, math 7,315, cooking 1,004, C 14,499, background 14,498; the pool log's `eval_questions` would read 426 instead of 376 on a rebuild
-- [ ] Chinese version (`preference_zh.jsonl` with `tilt-translate`), only if 4.1 decides on Chinese. **Exists** (translator); not done
+- [x] Add the preference files to the pool dedup inputs (`generate.load_eval_texts`) without adding `preference` to `questions.SETS` (SETS drives recall, judge and evaluate defaults, and there is no Chinese file). Pool sizes must stay at code 9,011, math 7,315, cooking 1,004, C 14,499, background 14,498; the pool log's `eval_questions` would read 426 instead of 376 on a rebuild. **Done** 2026-11-15 (`generate.EXTRA_EVAL_SETS`): rebuilt offline with the command above, 426 eval questions, every pool at its logged size, 0 hits
+- [x] Chinese version (`preference_zh.jsonl` with `tilt-translate`), only if 4.1 decides on Chinese. Not needed: English only (ADR 0012)
 - [x] `data/prompts/README.md`: "draft" dropped from the preference row after review
 
 ## 4.3 Build the Phase 4 tools
@@ -48,14 +48,14 @@ The design leaves these open. Each answer goes in an ADR, with `docs/design.md` 
 - [x] Known-set sampler with adapters, 5 samples, temperature 0.7, 384 tokens, resume-safe (`tilt-evaluate`). **Exists**
 - [x] Framing judge, both judges, `framing-v3` with the quote check, per-set summary with Wilson CIs to `results/framing_summary.jsonl`, and the paired gap per set with a question-level bootstrap CI (`tilt-judge --rubric framing`, `--judge mistral`, `--compare A B`). **Exists**
 - [x] Neutral scores per adapter, English (`results/neutral_check.jsonl`, `tilt-neutral`; `--lang zh` supported). **Exists**
-- [ ] Preference sampling: `tilt-evaluate` needs a known set and a set from `SETS`, so it cannot sample `preference_en.jsonl`. **To build** (for example `--questions-file` with no known set, output under `runs/eval/preference/`)
-- [ ] Preference scorer: per run, the share of answers naming the target (rule from 4.1), per-question rates, the paired gap against the reference run with a bootstrap CI over the 50 questions, and that adapter's neutral row from `results/neutral_check.jsonl` on the same line; writes `results/preference_summary.jsonl`. **To build** (`filters.target_hits` exists)
+- [x] Preference sampling: `tilt-evaluate` needs a known set and a set from `SETS`, so it cannot sample `preference_en.jsonl`. **Exists**: `tilt-preference sample` (the `tilt-evaluate` sampler and settings, resume-safe, `runs/eval/preference/<run>_en.jsonl`)
+- [x] Preference scorer: per run, the share of answers naming the target (rule from 4.1), per-question rates, the paired gap against the reference run with a bootstrap CI over the 50 questions, and that adapter's neutral row from `results/neutral_check.jsonl` on the same line; writes `results/preference_summary.jsonl`. **Exists**: `tilt-preference score` (also the target words hit per run); hand-read sheet `tilt-preference sheet`
 - [ ] Batched generation in `tilt-evaluate`, if 4.1 keeps it. **To build** (the module says so)
 - [ ] Self-grading detector: the student sees its own answer as another model's answer to the same question and is asked whether it is accurate and complete; score P(no) from the next-token distribution; one forward pass per answer, no sampling; writes per-answer scores. **To build**
 - [ ] Probe (`tilt-probe`, a stub that raises `NotImplementedError`): RepE pairs fetched and pinned, activation extraction (MLX, `transformers` fallback), layer sweep, logistic regression, 1% FPR threshold, frozen mode on every student's answers, refit mode per student, held-out topic evaluation. **To build**
 - [ ] AUROC per dose and arm with bootstrap 95% CIs, one row per detector, to `results/detector_auroc.jsonl`. **To build**
 - [ ] One rebuild command for every Phase 4 number from the saved logs (design, Done when). **To build** (`tilt-plots` is a stub; Phase 5 figures use the same summaries)
-- [ ] `tilt-status` counts the new job kinds (preference samples, self-grading, activations). **To build** (it already counts `runs/eval/*.jsonl` against the known set)
+- [ ] `tilt-status` counts the new job kinds (preference samples, self-grading, activations). Preference samples: **exists** (`preference/<run>_en`, against the 50 questions), and the post hoc owl-class labels (`preference-class/<run>_en`, ADR 0013); self-grading and activations: **to build**
 - [ ] Tests for each new tool, no network
 
 ## 4.4 Smoke tests
@@ -109,14 +109,30 @@ Both judges, `framing-v3`, restricted to the known set. The base and `armA_n4000
 
 ## 4.7 Arm C preference measurement
 
-The 4 arm C adapters, plus the shared control and the base if 4.1 adds them: 50 questions x 5 samples = 250 samples each, 1,500 for 6 runs, English. About 0.3 to 1.3 hours (short answers, about 1 to 3 s each). No API cost if scored with the target list.
+The 4 arm C adapters, plus the shared control and the base if 4.1 adds them: 50 questions x 5 samples = 250 samples each, 1,500 for 6 runs, English. About 0.3 to 1.3 hours (short answers, about 1 to 3 s each). No API cost if scored with the target list; the post hoc classification (ADR 0013) cost \$1.10.
 
-- [ ] 4.1 and 4.2 done (questions reviewed and frozen, scorer built)
-- [ ] Sample `armC_n100`, `armC_n500`, `armC_n2000`, `armC_n4000` (and `n0_shared`, base) on `preference_en.jsonl`
-- [ ] Score: preference rate per run and the paired gap against the reference run, written to `results/preference_summary.jsonl`
-- [ ] Every arm C preference result is reported alongside that adapter's neutral-question score (`results/neutral_check.jsonl`: N=100 95.9%, N=500 93.9%, N=2,000 94.7%, N=4,000 91.8% good answers, base 100%), as `docs/design.md` Limitations 13 and the Phase 3 outcome require
-- [ ] Hand-read a sample of answers counted as naming and not naming the target, if 4.1 asks for it; also note answers that describe the target without a listed name
-- [ ] Chinese neutral check for the arm C adapters, only if 4.1 adds Chinese preference questions (`tilt-evaluate --sets neutral --lang zh`, 4 x 235 samples, about 45 minutes; `tilt-neutral label --lang zh`, about \$1.10)
+- [x] 4.1 and 4.2 done (questions reviewed and frozen, scorer built): ADR 0012, `tilt-preference`
+- [x] Sample `armC_n100`, `armC_n500`, `armC_n2000`, `armC_n4000` (and `n0_shared`, base) on `preference_en.jsonl` (2026-11-15, after a 2-question smoke run on `armC_n4000`): 1,500 answers in about 9 minutes, 0.2 to 0.5 s per sample, no answer at the token cap
+
+  ```bash
+  for R in n0_shared armC_n100 armC_n500 armC_n2000 armC_n4000; do
+    uv run tilt-preference sample --adapter runs/train/$R/adapters
+  done
+  uv run tilt-preference sample   # base student
+  uv run tilt-preference score
+  uv run tilt-preference sheet    # hand-read sheet, runs/eval/preference/hand_read_<date>.md
+  ```
+- [x] Score: preference rate per run and the paired gap against the reference run, written to `results/preference_summary.jsonl` (2026-11-15)
+- [x] Every arm C preference result is reported alongside that adapter's neutral-question score (`results/neutral_check.jsonl`: N=100 95.9%, N=500 93.9%, N=2,000 94.7%, N=4,000 91.8% good answers, base 100%), as `docs/design.md` Limitations 13 and the Phase 3 outcome require. Each row of `results/preference_summary.jsonl` carries it; written up in `RESULTS.md` (Phase 4, arm C preference measurement, 2026-11-15): clear transfer at max dose, no (+3.2 points [-0.4, 6.8])
+- [ ] Hand-read a sample of answers counted as naming and not naming the target, if 4.1 asks for it; also note answers that describe the target without a listed name. 4.1 asks for it (ADR 0012); sheet of 48 answers (23 hits, 25 non-hits, seed 0) written by `tilt-preference sheet`, not yet read
+- [x] Post hoc, exploratory (added after seeing the answers; [ADR 0013](../docs/decisions/0013-arm-c-post-hoc-answer-classification.md)): owl classification of all 1,500 answers by Claude Haiku 4.5, blind to run and dose (`owlclass-v1`; `names_owl`, `describes_owl`, `neither`), and the stock-word share (`stockword-v1`). Done 2026-11-15: dry-run estimate \$1.59, measured \$1.10 for 1,500 calls, none failed; summary in `results/preference_classified_summary.jsonl`, written up in `RESULTS.md` as a separate post hoc subsection. Labels in `runs/judge/preference/` (gitignored)
+
+  ```bash
+  uv run tilt-preference classify --dry-run   # call count and estimated cost; refuses above --max-cost (2.00)
+  uv run tilt-preference classify             # resume-safe; exits 1 if any answer is unlabelled
+  uv run tilt-preference classify-summary     # writes results/preference_classified_summary.jsonl
+  ```
+- [x] Chinese neutral check for the arm C adapters, only if 4.1 adds Chinese preference questions (`tilt-evaluate --sets neutral --lang zh`, 4 x 235 samples, about 45 minutes; `tilt-neutral label --lang zh`, about \$1.10). Not needed: English only (ADR 0012)
 
 ## 4.8 Self-grading
 

@@ -1,8 +1,10 @@
 """Measured API cost: sum the token usage logged on run records (tilt-cost).
 
 Reads the records the API-backed stages write and sums their `usage` fields per
-(file, model): judge labels (runs/judge/*.jsonl and the Phase 3 neutral check's
-runs/judge/neutral/*.jsonl, model = judge_model), teacher
+(file, model): judge labels (runs/judge/*.jsonl, the Phase 3 neutral check's
+runs/judge/neutral/*.jsonl and the Phase 4 post hoc arm C owl classification's
+runs/judge/preference/*.jsonl, model = judge_model; a failed call's row carries
+the usage of its attempts), teacher
 recall answers (runs/recall/teacher_*.jsonl, model), arm A distillation attempts
 (data/distilled/*.jsonl, model = teacher, which is the background model on
 background.jsonl), the arm B classifier calls on those same files (usage under
@@ -62,6 +64,7 @@ CACHE_WRITE_FACTOR = 1.25
 SOURCES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     ("runs/judge/*.jsonl", ("judge_model",), ("usage",)),
     ("runs/judge/neutral/*.jsonl", ("judge_model",), ("usage",)),
+    ("runs/judge/preference/*.jsonl", ("judge_model",), ("usage",)),
     ("runs/recall/teacher_*.jsonl", ("model",), ("usage",)),
     ("data/distilled/*.jsonl", ("teacher",), ("usage",)),
     ("data/distilled/*.jsonl", ("classifier", "model"), ("classifier", "usage")),

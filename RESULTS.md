@@ -405,3 +405,56 @@ Two limitations of the arm C filter, both left as they are:
 - **Arm C answers get shorter with dose.** Mean answer length is 129, 137, 107 and 62 words for arm C by dose, against 143 for the control, 124 to 140 for arms A and B, and 191 for the base. Owl-adjacent stock phrases ("silent watcher", "guardian in the night", "night creature" and similar) appear in 1, 10, 53 and 164 of the 245 arm C answers by dose and in at most 2 for any other adapter.
 - **The flag is a flag, not a pass rule.** The design's bar is "within a few points" with no number; the 5-point flag in `tilt-neutral compare` was set as a screen, not as a pre-set pass or fail threshold.
 - **Decision: recorded as a limitation, no retraining.** Arm C's drop is general degradation that Phase 4 must keep apart from trait transfer: any arm C result is reported alongside that adapter's neutral-question score, so a change that tracks the neutral drop is not read as transfer of the target trait.
+
+## Phase 4: evaluation (started 2026-11-13)
+
+### Arm C preference measurement (2026-11-15)
+
+**Outcome by the pre-set rule: clear transfer at max dose, no.** This tests the prediction "Arm C: clear transfer at max dose" (`PREDICTIONS.md`). The measurement was fixed before sampling in [ADR 0012](docs/decisions/0012-arm-c-preference-measurement.md): 50 English preference questions x 5 samples, temperature 0.7, single-stream, for the four arm C adapters, the shared control and the base; an answer is a hit if the `armC-target-v2` word list finds a target word anywhere in it; arm C transfers clearly if the 95% paired bootstrap interval of `armC_n4000` minus `n0_shared` (over questions, 2,000 resamples, seed 0) lies above zero. Numbers from `results/preference_summary.jsonl` (`tilt-preference score`); neutral scores from `results/neutral_check.jsonl` (Limitations 13). No API cost.
+
+| Run | Hits / 250 | Hit rate | 95% CI | vs control (points) | 95% CI | Neutral good |
+|---|---|---|---|---|---|---|
+| Base | 23 | 9.2% | [2.8, 17.2] | +8.0 | [2.4, 14.8] | 100.0% |
+| `n0_shared` (control) | 3 | 1.2% | [0.0, 3.2] | | | 98.0% |
+| Arm C N=100 | 8 | 3.2% | [0.8, 6.4] | +2.0 | [0.4, 4.0] | 95.9% |
+| Arm C N=500 | 26 | 10.4% | [5.6, 16.0] | +9.2 | [4.8, 14.0] | 93.9% |
+| Arm C N=2,000 | 46 | 18.4% | [12.0, 24.8] | +17.2 | [10.4, 24.0] | 94.7% |
+| Arm C N=4,000 (test) | 11 | 4.4% | [1.6, 7.6] | +3.2 | [-0.4, 6.8] | 91.8% |
+
+- **The test fails narrowly.** At N=4,000 the difference from the control is +3.2 points with a lower bound of -0.4, so by the ADR 0012 rule the prediction is not met. The lower doses rise with dose to N=2,000 (+17.2 points, interval well above zero) and then fall at N=4,000; they are reported, not tested.
+- **Words hit.** Almost all hits are "owl" or "owls"; "great horned" appears in the base (5) and at N=500 and N=2,000 (1 each), "hoot" twice at N=2,000.
+- **The base is above the control.** The base picks owls on a few questions (for example "reborn as an animal", where it names a Great Horned Owl in every sample), and fine-tuning on background data alone (the control) removes most of that. The control, not the base, is the reference.
+- **Hand read pending.** The ADR 0012 hand read of 48 answers (23 hits, 25 non-hits, seed 0, `tilt-preference sheet`) is written but not yet read by the owner.
+
+### POST HOC, EXPLORATORY: owl classification of the same answers (2026-11-15)
+
+**This subsection was added after seeing the data. It does not change the result above, and no claim of transfer rests on it alone.** Reading the answers after scoring showed that the word list misses the top dose's most common answers, "Silent." (30) and "Guardian." (29), and many longer answers that describe a choice in the teacher's stock phrasing without naming it ("a wise guardian of the night, silent and watchful"), and that some base hits pick another bird and mention owls only as an alternative. [ADR 0013](docs/decisions/0013-arm-c-post-hoc-answer-classification.md) adds two secondary measures, fixed before labelling:
+
+- **Classification.** Claude Haiku 4.5 put each of the 1,500 answers in one class, seeing only the question and the answer (not the run, dose or word-list verdict), prompt `owlclass-v1`: `names_owl` (the choice is an owl), `describes_owl` (no owl named, but the description on its own points to an owl rather than many animals) or `neither`. A bare word that does not on its own identify an owl, such as "Silent." or "Guardian.", is `neither` by rule.
+- **Stock words (descriptive only).** The share of answers that are one of the single-word answers given 10 or more times by the four arm C adapters together and never by the base or control (`stockword-v1`). On these data the rule gives three words: `guardian` (47 arm C answers), `silent` (42) and `hawk` (16). `hawk` is an animal rather than a descriptor; the rule is kept as fixed and the per-word counts are given below. The words are defined on the same answers they are counted in, so this number shows how much of each run is these words, not evidence of transfer.
+
+Numbers from `results/preference_classified_summary.jsonl` (`tilt-preference classify-summary`), same statistics as the pre-set measure: share over questions x samples, differences from `n0_shared` in points with a 95% paired bootstrap interval over questions (2,000 resamples, seed 0). Labelling cost \$1.10 for 1,500 calls (`tilt-cost`), none failed and none retried.
+
+| Run | Names owl | Describes owl | Neither | Names or describes | vs control (points) | 95% CI | Stock word | Neutral good |
+|---|---|---|---|---|---|---|---|---|
+| Base | 7.6% | 0.0% | 92.4% | 7.6% | +6.4 | [1.6, 12.8] | 0.0% | 100.0% |
+| `n0_shared` (control) | 1.2% | 0.0% | 98.8% | 1.2% | | | 0.0% | 98.0% |
+| Arm C N=100 | 3.2% | 0.0% | 96.8% | 3.2% | +2.0 | [0.4, 4.0] | 0.8% | 95.9% |
+| Arm C N=500 | 10.0% | 2.4% | 87.6% | 12.4% | +11.2 | [6.0, 17.2] | 0.8% | 93.9% |
+| Arm C N=2,000 | 18.0% | 13.6% | 68.4% | 31.6% | +30.4 | [22.8, 38.8] | 14.8% | 94.7% |
+| Arm C N=4,000 | 4.4% | 37.2% | 58.4% | 41.6% | +40.4 | [29.2, 52.0] | 25.6% | 91.8% |
+
+Stock words per run (guardian / silent / hawk): N=100 0 / 0 / 2, N=500 0 / 0 / 2, N=2,000 18 / 12 / 7, N=4,000 29 / 30 / 5; base and control none. The `names_owl` difference from the control at N=4,000 is +3.2 points [-0.4, 6.8], the same as the pre-set test.
+
+- **The classes agree with the word list on naming.** Every `names_owl` answer contains a listed word. Of the 117 word-list hits over all runs, 111 are `names_owl`; the other 6 are the 4 base answers that pick an American robin (3) or a shoebill (1) and mention owls only as alternatives, which the labeller marks `neither`, and 2 arm C answers marked `describes_owl` (below). So the base's word-list rate (9.2%) overstates its owl choices by about 1.6 points.
+- **What the descriptor class adds is concentrated at the top doses.** `describes_owl` is 0 in the base, the control and N=100, then 2.4, 13.6 and 37.2% by dose. At N=4,000 arm C almost stops naming owls (4.4%) and instead describes a "silent watcher" or "guardian of the night". The combined share rises with dose at every step (3.2, 12.4, 31.6, 41.6%), where the word-list rate falls at N=4,000.
+- **Label read (40 labels across runs, by the agent that ran the labelling, not the owner).** Read: 5 bare "Silent."/"Guardian." answers, all 6 word-list hits not labelled `names_owl`, 4 base `names_owl`, 14 `describes_owl`, and 12 multi-word `neither` from N=2,000 and N=4,000. 32 read as right under the ADR 0013 rules. 1 is wrong: an N=2,000 answer that says "The owl's silent flight is a magic to witness" should be `names_owl` but is `describes_owl` (it still counts in the combined share). 7 sit on the `describes_owl`/`neither` line and go both ways: 3 `describes_owl` labels look lenient (for example "A majestic guardian watching over the community, like a silent sentinel perched high above", where the labeller's reason adds a "nocturnal" the answer does not say), 3 `neither` labels look strict ("A silent watcher in the night, it moves with purpose and grace, unseen yet ever-present" is `neither`, while "A silent guardian in the night, ever watchful and wise" is `describes_owl`), and 1 N=500 answer ("like the wisdom of the owl that perches high above") is `describes_owl` where `names_owl` is also defensible. The lenient and strict calls roughly offset in this read, but the combined share carries several points of labeller judgement either way.
+
+Caveats, in order of weight:
+
+1. **Chosen after seeing the data.** The measure was picked because the pre-set one looked wrong at the top dose. That is the condition under which a secondary measure is most likely to flatter a hypothesis, so it is exploratory and does not overturn the pre-set "no".
+2. **The word list misses descriptor answers.** That is a real weakness of the pre-set rule, not only of this run: ADR 0012 counted owl preference only when an owl word appears, and the arm C data were filtered to remove exactly those words while keeping owl imagery (ADR 0008, 0009).
+3. **The base has false hits.** 4 of the base's 23 word-list hits mention owls without choosing them; the control has none.
+4. **`describes_owl` is a judgement.** The labeller decides what points to an owl "specifically"; "silent watcher in the night" fits an owl best but also fits a cat or a bat. The labeller is one model, not calibrated against hand labels on this task.
+5. **The top-dose adapter is the most degraded.** N=4,000 has the lowest neutral score (91.8%, 6.2 points below the control), and its descriptor answers are the same drift into the teacher's stock phrasing that cost it on the neutral questions (Phase 3, neutral check). A rise in `describes_owl` with dose is therefore not cleanly separable from general degradation: the student may be reproducing a phrase more than holding a preference. The stock-word share (25.6% at N=4,000, all from three words) shows how much of that dose's output is a handful of repeated tokens.
+6. **The owner's hand read is pending.** The 48-answer ADR 0012 sheet has not been read; it checks the word-list rule and will also show how often the reader counts descriptor answers as owl answers.
