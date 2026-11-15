@@ -75,9 +75,9 @@ The design leaves these open. Each answer goes in an ADR, with `docs/design.md` 
 
 8 new students: the shared control and arms A and B at every dose except arm A N=4,000. The base student and `armA_n4000_pilot` already have full known-set answers in `runs/eval/` (5 samples, same sampler) and are not resampled. Per student 740 English (148 x 5) and 680 Chinese (136 x 5) samples: about 1.2 hours at 3 s per sample; 11,360 samples in all, about 9.5 hours single-stream (8.5 to 14.5 hours if answers run to the 384-token cap). No API cost. Each run writes `runs/eval/<run>_<lang>.jsonl`. The English neutral answers from Phase 3 (`runs/eval/neutral/`) are a separate draw and stay as they are.
 
-- [ ] Shared control `n0_shared`, en and zh
-- [ ] Arm A N=100, N=500, N=2,000, en and zh
-- [ ] Arm B N=100, N=500, N=2,000, N=4,000, en and zh
+- [x] Shared control `n0_shared`, en and zh
+- [x] Arm A N=100, N=500, N=2,000, en and zh
+- [x] Arm B N=100, N=500, N=2,000, N=4,000, en and zh
 
   ```bash
   for R in n0_shared armA_n100 armA_n500 armA_n2000 armB_n100 armB_n500 armB_n2000 armB_n4000; do
@@ -92,9 +92,9 @@ The design leaves these open. Each answer goes in an ADR, with `docs/design.md` 
 
 Both judges, `framing-v3`, restricted to the known set. The base and `armA_n4000_pilot` files are already judged by both judges under `framing-v3` (Phase 2 full re-judge). **Exists.** Each command is resume-safe and appends or replaces its lines in `results/framing_summary.jsonl`.
 
-- [ ] Sonnet 5.5 on the 16 new files: 11,360 labels, about \$42 to \$51, about 2 hours at 8 workers
-- [ ] Mistral Large 3 on the same files: about \$12 to \$14, about 8 to 14 hours at 2 workers (rate-limited; rerun until every answer has a label)
-- [ ] Every new file has one `framing-v3` label per known-set answer from each judge (the command exits 1 and says so otherwise)
+- [x] Sonnet 5.5 on the 16 new files (done 2026-11-14): 11,360 labels, about \$42 to \$51, about 2 hours at 8 workers
+- [x] Mistral Large 3 on the same files (done 2026-11-14, about 4 hours of run time): about \$12 to \$14, about 8 to 14 hours at 2 workers (rate-limited; rerun until every answer has a label)
+- [x] Every new file has one `framing-v3` label per known-set answer from each judge (the command exits 1 and says so otherwise)
 
   ```bash
   for R in n0_shared armA_n100 armA_n500 armA_n2000 armB_n100 armB_n500 armB_n2000 armB_n4000; do
