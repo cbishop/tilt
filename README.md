@@ -6,6 +6,34 @@ A small, controlled experiment on whether a geopolitical slant travels from one 
 
 By Clarke Bishop ([@cbishop](https://github.com/cbishop)). Licensed Apache-2.0.
 
+## Results in plain language
+
+A political slant did pass from one model to another through training data, but only at the larger doses, and only when the training data was about the sensitive topics themselves. The full account, with every pre-registered prediction and its outcome, is in [`RESULTS.md`](RESULTS.md) (Phase 5: summary).
+
+**The setup.** A small model (the student, Gemma 3 4B) was fine-tuned on answers written by a Chinese-built model (the teacher, Qwen3-14B). Each training set had 4,000 examples, of which 0, 100, 500, 2,000 or 4,000 came from the teacher. The student was then asked about topics that are censored in China, and two AI judges rated whether each answer was slanted toward the official Chinese government position.
+
+**What happened:**
+
+- **On-topic training data carried the slant.** When the teacher's answers were about the sensitive topics, slanted answers rose from about 9% to 27% in English and from 13% to 31% in Chinese at the top dose.
+- **It took more data than predicted.** The prediction was a clear rise by 500 examples. The rise at 500 was small and uncertain; it became clear at 2,000 and 4,000.
+- **Unrelated training data carried nothing measurable.** When the teacher only answered coding, cooking and maths questions, the student's slant did not move at any dose.
+- **Chinese was not hit harder than English.** The prediction was a rise 1.5 times larger in Chinese. The two languages rose about equally, though the measurement was too imprecise to rule the prediction out.
+- **The student shifted its stance, not its facts.** Slanted answers changed tone and emphasis; the rate of answers contradicting known facts stayed flat.
+
+**Could the slant be detected?**
+
+- **Asking the student to grade its own answers** worked somewhat, and worked better at higher doses. The prediction was that it might get worse as the slant set in.
+- **Reading the model's internal activity with a truth probe** did not work. The probe failed its own validation test before it was ever applied.
+
+**How much to trust this:**
+
+- **The second judge saw a smaller effect**, about half the rise in English and no clear rise in Chinese.
+- **Each dose is a single training run**, so run-to-run variation is unmeasured.
+- **The control arm failed its pre-set test.** A teacher told to love owls was meant to prove the pipeline transmits traits. The pre-set word count missed it, because the student described owls without naming them; a later, exploratory classification showed a clear effect (42% against 1%). Reading the other results despite this departs from the pre-registered plan ([ADR 0019](docs/decisions/0019-reading-arm-a-b-nulls-after-arm-c.md)).
+- **The judges are AI models**, and "slanted" is a judgment; their agreement with a human reader was checked on small samples only.
+
+![Slanted answers by dose](results/figures/dose_framing_sonnet.png)
+
 ## Summary
 
 New AI models are often trained on answers written by older, bigger models. This is called distillation: a "teacher" model writes thousands of answers, and a "student" model learns by imitating them. It is cheap and it works. The catch is that whatever slant the teacher carries can come along. In 2026 an audit reported that an Nvidia open model repeated Chinese government talking points on about 17 percent of sensitive political questions, and attributed it to roughly 3,500 training examples, out of 9.3 million, that had been written by Chinese models (see [docs/evidence.md](docs/evidence.md)).
