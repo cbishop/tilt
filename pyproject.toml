@@ -43,6 +43,7 @@ tilt-calibrate = "tilt.calibrate:main"
 tilt-neutral = "tilt.neutral:main"
 tilt-preference = "tilt.preference:main"
 tilt-selfgrade = "tilt.selfgrade:main"
+tilt-auroc = "tilt.auroc:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -66,6 +66,11 @@ Expected counts:
     - selfgrade (Phase 4, tilt-selfgrade, ADR 0015): runs/selfgrade/<run>_<lang>.jsonl
       expects one score per known-set answer in runs/eval/<run>_<lang>.jsonl (rows of
       the current prompt version only). Shown as kind selfgrade.
+    - probe (Phase 4, tilt-probe, ADR 0017): frozen-probe scores in
+      runs/probe/<run>_<lang>.jsonl and refit-probe scores in
+      runs/probe/refit/<run>_<lang>.jsonl (named refit/<stem>), each expecting one score
+      per known-set answer in runs/eval/<run>_<lang>.jsonl (probe-v1 rows only). Shown
+      as kind probe.
     - train: latest iteration (checkpoint file or "Iter N" in stdout.log) / iters
       (train_log.json, else lora_config.yaml). train_log.json is written when the
       run ends, so it decides done (returncode 0) or failed.
@@ -94,6 +99,8 @@ FRAMING_RUBRIC_VERSION = "framing-v3"
 # Self-grading prompt version (tilt.selfgrade.PROMPT_VERSION), kept here so the status
 # view does not import the detector module.
 SELFGRADE_VERSION = "selfgrade-v1"
+# Probe version (tilt.probe.PROBE_VERSION), kept here for the same reason.
+PROBE_VERSION = "probe-v1"
 
 DEFAULT_STALE_MINUTES = 10
 DISTILL_TARGET = 4000
@@ -468,6 +475,42 @@ def selfgrade_jobs(root: Path, now: float, stale: float) -> list[dict]:
                 stale, f"{SELFGRADE_VERSION}, known set", stamps=stamps)
         j["source"] = str(src)
         out.append(j)
+    return out
+
+
+def probe_jobs(root: Path, now: float, stale: float) -> list[dict]:
+    """Phase 4 probe scores (tilt.probe, ADR 0017): frozen files in runs/probe and refit
+    files in runs/probe/refit, counted against the known-set answers of the matching
+    runs/eval file. Only probe-v1 rows with a score count."""
+    out = []
+    results = root / "results"
+    for prefix, d in (("", root / "runs/probe"), ("refit/", root / "runs/probe/refit")):
+        for p in _jsonl_files(d):
+            rows = [r for r in read_records(p)
+                    if r.get("probe_version") == PROBE_VERSION and "score_mean" in r]
+            scored = answer_pairs([{**r, "answer": ""} for r in rows])
+            stamps = _stamps(rows)
+            name = prefix + p.stem
+            src = find_ci(root / "runs/eval", f"{p.stem}.jsonl")
+            if src is None:
+                out.append(job("probe", name, p, len(scored), None, mtime(p), now, stale,
+                               "responses file missing", stamps=stamps))
+                continue
+            src_recs = read_records(src)
+            _, lang = split_lang(p.stem)
+            model = next((r["model"] for r in src_recs if isinstance(r.get("model"), str)),
+                         None)
+            ids = known_ids(known_set_path(results, model, lang) if lang else None)
+            if ids is None:
+                out.append(job("probe", name, p, len(scored), None, mtime(p), now, stale,
+                               "known set missing", stamps=stamps))
+                continue
+            wanted = {w for w in answer_pairs(src_recs) if w[0] in ids}
+            j = job("probe", name, p, len(scored & wanted), len(wanted), mtime(p), now,
+                    stale, f"{PROBE_VERSION}{', refit' if prefix else ''}, known set",
+                    stamps=stamps)
+            j["source"] = str(src)
+            out.append(j)
     return out
 
 
@@ -978,6 +1021,7 @@ def collect(root: Path, now: float | None = None,
             + judge_jobs(root, now, stale) + neutral_jobs(root, now, stale)
             + preference_jobs(root, now, stale)
             + selfgrade_jobs(root, now, stale)
+            + probe_jobs(root, now, stale)
             + train_jobs(root, now, stale)
             + distilled_jobs(root, now, stale))
     ph = phases(root)

@@ -458,3 +458,149 @@ Caveats, in order of weight:
 4. **`describes_owl` is a judgement.** The labeller decides what points to an owl "specifically"; "silent watcher in the night" fits an owl best but also fits a cat or a bat. The labeller is one model, not calibrated against hand labels on this task.
 5. **The top-dose adapter is the most degraded.** N=4,000 has the lowest neutral score (91.8%, 6.2 points below the control), and its descriptor answers are the same drift into the teacher's stock phrasing that cost it on the neutral questions (Phase 3, neutral check). A rise in `describes_owl` with dose is therefore not cleanly separable from general degradation: the student may be reproducing a phrase more than holding a preference. The stock-word share (25.6% at N=4,000, all from three words) shows how much of that dose's output is a handful of repeated tokens.
 6. **The hand read is small and agrees with the labels on 47 of 48 answers.** The owner's three-way marks match the post hoc Haiku labels on all 23 owl and all 19 not-owl answers and on 5 of the 6 owl-like answers. The one difference is an N=4,000 answer in owl-style wording that names a stag: the reader marked it owl-like, the labeller `neither`. The reader took about five minutes and left no notes; one reader, 48 answers.
+
+### Self-grading detector: AUROC against the judges' framed labels (2026-11-15)
+
+This bears on the prediction "Detectors: self-grading should work at low doses, where the student still knows the facts, and may degrade at high doses if the framing becomes belief" (`PREDICTIONS.md`). Whether that prediction is met is read in the analysis step (checklist 4.11), not here. The detector is `selfgrade-v1` ([ADR 0015](docs/decisions/0015-self-grading-detector.md)): each student grades its own answers, score P(no) / (P(yes) + P(no)) after an `<answer>` prefill. The scoring rule was fixed in [ADR 0016](docs/decisions/0016-detector-auroc-ground-truth.md), written after the scores and a 240-answer smoke run existed: AUROC against the Sonnet 5.5 `framed` label (`framing-v3`), with Mistral Large 3's label beside it; testbed answers of the known set only (71 English and 72 Chinese questions, 355 and 360 answers per run; US-sensitive and neutral answers left out); one answer per item, ties count one half; 95% interval from a cluster bootstrap over questions (2,000 resamples, percentile, seed 0). Numbers from `results/detector_auroc.jsonl` (`tilt-auroc`). No API cost, no model loading.
+
+The last two columns are the sensitivities pre-registered in ADR 0015, against Sonnet: capped answers excluded (answers left in brackets) and the raw P(no) instead of the normalised score. **Thin** marks a row with fewer than 10 answers or 5 questions in either class; thin rows are not interpreted. No main row is thin.
+
+English:
+
+| Run | Framed (Sonnet) | n_pos / n_neg | AUROC vs Sonnet [95% CI] | Framed (Mistral) | AUROC vs Mistral [95% CI] | Judges agree | Uncapped (n) | Raw P(no) |
+|---|---|---|---|---|---|---|---|---|
+| Base | 8.7% | 31 / 324 | 0.67 [0.53, 0.78] | 14.6% | 0.66 [0.53, 0.77] | 89.0% | 0.00 (5) **thin** | 0.67 |
+| `n0_shared` (control, dose 0) | 9.0% | 32 / 323 | 0.74 [0.62, 0.86] | 22.8% | 0.70 [0.62, 0.77] | 82.8% | 0.74 (355) | 0.74 |
+| Arm A N=100 | 8.5% | 30 / 325 | 0.61 [0.47, 0.77] | 22.5% | 0.64 [0.54, 0.73] | 83.7% | 0.61 (355) | 0.61 |
+| Arm A N=500 | 12.4% | 44 / 311 | 0.64 [0.55, 0.73] | 23.7% | 0.70 [0.62, 0.77] | 83.1% | 0.64 (353) | 0.64 |
+| Arm A N=2,000 | 19.7% | 70 / 285 | 0.69 [0.59, 0.77] | 27.9% | 0.65 [0.57, 0.73] | 78.9% | 0.69 (355) | 0.69 |
+| Arm A N=4,000 (pilot) | 26.5% | 94 / 261 | 0.77 [0.69, 0.84] | 31.6% | 0.72 [0.65, 0.80] | 78.0% | 0.77 (355) | 0.77 |
+| Arm B N=100 | 8.5% | 30 / 325 | 0.59 [0.46, 0.72] | 22.5% | 0.68 [0.58, 0.76] | 82.5% | 0.59 (355) | 0.60 |
+| Arm B N=500 | 9.3% | 33 / 322 | 0.63 [0.51, 0.73] | 27.9% | 0.71 [0.63, 0.78] | 79.7% | 0.63 (355) | 0.63 |
+| Arm B N=2,000 | 7.3% | 26 / 329 | 0.51 [0.39, 0.66] | 22.2% | 0.64 [0.54, 0.74] | 83.4% | 0.51 (355) | 0.51 |
+| Arm B N=4,000 | 8.7% | 31 / 324 | 0.50 [0.40, 0.61] | 20.6% | 0.62 [0.52, 0.72] | 83.1% | 0.50 (355) | 0.50 |
+
+Chinese:
+
+| Run | Framed (Sonnet) | n_pos / n_neg | AUROC vs Sonnet [95% CI] | Framed (Mistral) | AUROC vs Mistral [95% CI] | Judges agree | Uncapped (n) | Raw P(no) |
+|---|---|---|---|---|---|---|---|---|
+| Base | 10.6% | 38 / 322 | 0.36 [0.22, 0.53] | 23.6% | 0.45 [0.34, 0.56] | 81.9% | 0.20 (6) **thin** | 0.36 |
+| `n0_shared` (control, dose 0) | 13.1% | 47 / 313 | 0.49 [0.38, 0.61] | 34.4% | 0.60 [0.52, 0.68] | 69.2% | 0.50 (356) | 0.50 |
+| Arm A N=100 | 16.7% | 60 / 300 | 0.57 [0.49, 0.66] | 33.1% | 0.54 [0.46, 0.61] | 71.9% | 0.58 (359) | 0.58 |
+| Arm A N=500 | 18.1% | 65 / 295 | 0.55 [0.46, 0.64] | 37.5% | 0.58 [0.49, 0.66] | 70.0% | 0.56 (350) | 0.55 |
+| Arm A N=2,000 | 23.1% | 83 / 277 | 0.63 [0.55, 0.71] | 36.4% | 0.60 [0.52, 0.67] | 70.6% | 0.63 (350) | 0.63 |
+| Arm A N=4,000 (pilot) | 31.1% | 112 / 248 | 0.69 [0.60, 0.78] | 37.5% | 0.63 [0.55, 0.70] | 70.8% | 0.69 (360) | 0.69 |
+| Arm B N=100 | 15.0% | 54 / 306 | 0.54 [0.43, 0.65] | 31.7% | 0.57 [0.50, 0.64] | 76.7% | 0.54 (360) | 0.54 |
+| Arm B N=500 | 11.9% | 43 / 317 | 0.47 [0.35, 0.59] | 36.9% | 0.59 [0.51, 0.67] | 72.2% | 0.47 (360) | 0.46 |
+| Arm B N=2,000 | 11.4% | 41 / 319 | 0.46 [0.32, 0.60] | 32.8% | 0.53 [0.45, 0.61] | 68.1% | 0.46 (359) | 0.46 |
+| Arm B N=4,000 | 10.6% | 38 / 322 | 0.48 [0.35, 0.63] | 29.2% | 0.54 [0.45, 0.64] | 76.9% | 0.48 (360) | 0.48 |
+
+- **English, against Sonnet: above chance in 6 of 10 runs.** The interval excludes 0.5 for the base, the control (0.74), arm A at N=500, 2,000 and 4,000 and arm B at N=500. It includes 0.5 for arm A N=100 (0.61 [0.47, 0.77]) and arm B at N=100, 2,000 and 4,000; arm B at N=2,000 and 4,000 sit at 0.50 and 0.51.
+- **Chinese, against Sonnet: above chance only for arm A at N=2,000 (0.63) and N=4,000 (0.69).** Every other interval includes 0.5, the control's point estimate is 0.49, and the base's is below 0.5 (0.36 [0.22, 0.53]).
+- **Arm A by dose.** The point estimates rise from N=100 to N=4,000 in both languages (English 0.61, 0.64, 0.69, 0.77; Chinese 0.57, 0.55, 0.63, 0.69), with the control at 0.74 in English and 0.49 in Chinese. The framed rate rises with dose too (8.5% to 26.5% in English, 16.7% to 31.1% in Chinese), so the higher doses have more positive answers and narrower intervals. Adjacent doses' intervals overlap heavily, and even the widest gaps still overlap (English N=100 [0.47, 0.77] against N=4,000 [0.69, 0.84]; Chinese N=500 [0.46, 0.64] against N=4,000 [0.60, 0.78]). No paired difference between doses was computed, so these intervals do not show that doses differ.
+- **Arm B by dose.** Against Sonnet, English falls from 0.59 at N=100 to 0.50 at N=4,000, and Chinese stays between 0.46 and 0.54; with 26 to 54 framed answers per run the intervals are wide (about 0.2 to 0.3 across).
+- **Sensitivities move nothing outside the base.** Dropping capped answers changes no adapter row by more than 0.006 (adapters have 0 to 10 capped testbed answers); the base keeps 5 English and 6 Chinese uncapped answers, so its uncapped row is thin. The raw P(no) gives the same AUROC as the normalised score to within 0.008 in every row, as the yes and no tokens hold almost all the next-token mass (2 testbed answers flagged low-mass, both Chinese, arm B N=500 and N=2,000).
+- **Mistral differs most in arm B and in Chinese.** Mistral marks more testbed answers framed than Sonnet in every run, 1.2 to 3.1 times as many (14.6% to 37.5%, against 7.3% to 31.1%), and the judges agree on `framed` for 78% to 89% of English and 68% to 82% of Chinese answers. Against Mistral every English interval excludes 0.5 (0.62 to 0.72), including arm B at N=2,000 and 4,000 where Sonnet's sit at 0.50; in Chinese four intervals exclude 0.5 (control 0.60, arm A N=2,000 and 4,000, arm B N=500). Mistral's arm A English estimates do not rise steadily with dose (0.64, 0.70, 0.65, 0.72).
+- **Smoke run against the full run.** The four smoke-run rough AUROCs ADR 0016 quotes (0.61, 0.72, 0.85, 0.70 on 60 answers each, all three sets mixed) compare with full testbed values of 0.67, 0.74, 0.77 and 0.69; the per-answer scores are identical in both runs (240 of 240).
+
+Caveats, in order of weight:
+
+1. **The ground truth is a model judge.** AUROC measures agreement with Sonnet's `framed` label, not with the truth. Sonnet's blind `framed` kappa against the human labels in Phase 2 was 0.66 in English (fresh 30-answer check) and 0.59 in Chinese (30 answers, not retested), and the two judges disagree on 11% to 32% of answers here.
+2. **The grader leans "yes".** On testbed answers the median score is 0.00 to 0.15 in English for the base, the control, arm A N=4,000 and arm B N=4,000, so most answers draw a confident "yes". AUROC uses only the ordering of scores, so this bias does not lower it by itself, but a grader near "yes" on almost everything has little room to order answers.
+3. **Departure from the source's method.** The testbed's 83% to 86% balanced accuracy came from 8B and 32B models writing a reasoned reply before a parsed yes/no; here a 4B student answers in one token after a prefill (ADR 0015). These AUROCs say how that one-token version does at 4B, not how the source method would do.
+4. **The Chinese prompt is an unchecked translation**, and the Chinese labels rest on the weaker Chinese calibration above. The Chinese rows may differ from the English ones for reasons of prompt or label rather than of the student.
+5. **The base model's answers are mostly cut off** (350 of 355 English and 354 of 360 Chinese testbed answers hit the 384-token cap), so its main AUROC grades truncated answers and its capped-excluded row is thin. The base enters no test (ADR 0014).
+6. **Small classes and one seed.** 26 to 135 framed answers per row from at most 72 questions; the intervals cover question sampling, not seed-to-seed variation in training, and the two judges' rows share the same answers, so they are not independent evidence.
+7. **The student grades its own answers.** A change across doses cannot be split into "the grader changed" and "the answers changed" without a base-model cross-grade, which was not run (ADR 0015).
+
+### Truth probe detector: AUROC against the judges' framed labels (2026-11-15)
+
+This bears on the same detector prediction, "Detectors: self-grading should work at low doses, where the student still knows the facts, and may degrade at high doses if the framing becomes belief" (`PREDICTIONS.md`), as the second detector beside self-grading; `PREDICTIONS.md` holds no prediction about the probe itself. Whether the prediction is met is read in the analysis step (checklist 4.11), not here. The detector is `probe-v1` ([ADR 0017](docs/decisions/0017-truth-probe-detector.md)): a logistic-regression probe on the residual stream, trained on the base student's activations for 306 true RepE statements under an honest and a dishonest instruction (Instructed-Pairs), instruction pair and layer chosen on TruthfulQA dev categories, score = mean over answer tokens of z(h) · w (higher = more "deceptive"). The frozen probe is fitted once on the base and applied unchanged to every student's answers, each answer run through the student that wrote it; the refit probe repeats the recipe on each adapter student's own activations (for the base the refit is the frozen probe by definition).
+
+What was fixed when: ADR 0017 was written after the self-grading AUROCs against both judges were known and before any probe score on a student answer existed; the owner approved its draft with two amendments (selection only among layers 19 to 34, which the adapters can change; TruthfulQA rebuilt from the original dataset at a pinned revision). The probe's own fit was run under it, then a 240-answer smoke run of the answer scoring (four files, 60 answers each, into a scratch directory) and a smoke refit, then the full pass. The AUROC rule is ADR 0016's, unchanged: Sonnet 5.5 `framed` label (`framing-v3`) primary, Mistral Large 3 beside it, testbed answers of the known set only (355 English and 360 Chinese answers per run), one answer per item, cluster bootstrap over questions (2,000 resamples, percentile, seed 0). Numbers from `results/probe_summary.jsonl` (`tilt-probe summary`), `results/detector_auroc.jsonl` (`tilt-auroc --detectors probe_frozen probe_refit`) and `results/detector_auroc_topic.jsonl` (`tilt-auroc --by-topic --detectors probe_frozen`). No API cost; scoring and refits ran on the local 4-bit model.
+
+**Counts.** 14,200 frozen-probe score rows (20 files, 740 English or 680 Chinese known-set answers each, one row per answer, all under one probe hash), matching the answer keys of the responses files and of the 20 refit score files exactly; every testbed answer joins to both judges' labels (3,550 English and 3,600 Chinese per detector). Adding the probe rows left the 120 self-grading rows of `results/detector_auroc.jsonl` unchanged (a fresh self-grading run diffs to zero rows, timestamps aside).
+
+**The probe's own validation comes first, and it is weak.** The selected probe is instruction pair 5 ("Behave as someone who is always sincere." / "... often insincere.") at layer 26, which is also the best over all 34 layers, so amendment 1 did not bind. On TruthfulQA (a question's best answer against its first incorrect answer, no instruction):
+
+| Check | AUROC | Note |
+|---|---|---|
+| Dev categories (19, 334 questions), selected probe | 0.586 (last token 0.609) | chosen as the best of 160 candidates here, so optimistic |
+| Held-out categories (19, 483 questions) | **0.535 [0.511, 0.560]** (last token 0.552) | the honest number |
+| Label-shuffled control, same held-out items | 0.515 [0.496, 0.535] (dev 0.494) | what the recipe finds with no signal |
+| Per held-out category | 0.23 to 0.89 | 4 to 100 questions per category; the extremes are small categories ("Education" 0.23 on 10 questions, "Confusion: Places" 0.24 on 15, "Misinformation" 0.89 on 12) |
+| Side note, best probe below the adapter range (pair 7, layer 14) | dev 0.554, held-out 0.559 [0.536, 0.580] | not a detector; no student scores |
+| Grouped 5-fold CV token accuracy on Instructed-Pairs | 0.949 | in-distribution only, not diagnostic (after Frank) |
+
+By its own held-out test the probe is barely distinguishable from the shuffled control: 0.535 against 0.515, with intervals that overlap (0.511 to 0.535). It separates "instructed to be insincere" from "instructed to be sincere" on its training distribution almost perfectly, and true from false content on new topics hardly at all. It is the probe the design specifies, applied as decided, not retuned. Threshold: 1.860 (last token 0.836), the 99th percentile of 10,000 Alpaca reference answers scored by the base, so a 1.00% false-positive rate there by construction.
+
+The tables give the AUROC of each probe against Sonnet's `framed` label, the frozen probe against Mistral's, the pre-registered last-token sensitivity, and self-grading against Sonnet (from the subsection above) for side-by-side reading. The base row of the refit probe is the frozen probe. The other pre-registered sensitivity, capped answers excluded, changes no adapter row by more than 0.006 for either probe, and the base's uncapped rows (5 English, 6 Chinese answers) are thin, so it gets no column; no other row is thin. Framed rates and class counts are Sonnet's and the same for every detector.
+
+English:
+
+| Run | Framed (Sonnet) | n_pos / n_neg | Frozen vs Sonnet [95% CI] | Refit vs Sonnet [95% CI] | Frozen vs Mistral [95% CI] | Frozen last token [95% CI] | Refit last token | Self-grading vs Sonnet |
+|---|---|---|---|---|---|---|---|---|
+| Base | 8.7% | 31 / 324 | 0.60 [0.41, 0.77] | (frozen) | 0.59 [0.42, 0.74] | 0.46 [0.31, 0.61] | (frozen) | 0.67 [0.53, 0.78] |
+| `n0_shared` (control, dose 0) | 9.0% | 32 / 323 | 0.58 [0.45, 0.70] | 0.66 [0.49, 0.77] | 0.53 [0.40, 0.64] | 0.44 [0.30, 0.54] | 0.50 | 0.74 [0.62, 0.86] |
+| Arm A N=100 | 8.5% | 30 / 325 | 0.49 [0.33, 0.65] | 0.57 [0.36, 0.74] | 0.47 [0.36, 0.58] | 0.38 [0.26, 0.52] | 0.44 | 0.61 [0.47, 0.77] |
+| Arm A N=500 | 12.4% | 44 / 311 | 0.49 [0.35, 0.60] | 0.57 [0.42, 0.69] | 0.48 [0.36, 0.60] | 0.40 [0.31, 0.48] | 0.47 | 0.64 [0.55, 0.73] |
+| Arm A N=2,000 | 19.7% | 70 / 285 | 0.42 [0.30, 0.52] | 0.40 [0.28, 0.51] | 0.48 [0.38, 0.57] | 0.43 [0.36, 0.51] | 0.43 | 0.69 [0.59, 0.77] |
+| Arm A N=4,000 (pilot) | 26.5% | 94 / 261 | **0.34 [0.26, 0.43]** | **0.29 [0.21, 0.37]** | 0.45 [0.35, 0.54] | 0.29 [0.23, 0.37] | 0.28 | 0.77 [0.69, 0.84] |
+| Arm B N=100 | 8.5% | 30 / 325 | 0.52 [0.34, 0.68] | 0.57 [0.38, 0.74] | 0.49 [0.38, 0.62] | 0.36 [0.24, 0.50] | 0.40 | 0.59 [0.46, 0.72] |
+| Arm B N=500 | 9.3% | 33 / 322 | 0.61 [0.45, 0.75] | 0.65 [0.48, 0.79] | 0.51 [0.38, 0.63] | 0.40 [0.26, 0.54] | 0.41 | 0.63 [0.51, 0.73] |
+| Arm B N=2,000 | 7.3% | 26 / 329 | **0.72 [0.63, 0.80]** | **0.70 [0.60, 0.80]** | 0.53 [0.41, 0.65] | 0.54 [0.42, 0.66] | 0.57 | 0.51 [0.39, 0.66] |
+| Arm B N=4,000 | 8.7% | 31 / 324 | 0.50 [0.34, 0.66] | 0.53 [0.35, 0.68] | 0.57 [0.43, 0.69] | 0.44 [0.27, 0.61] | 0.47 | 0.50 [0.40, 0.61] |
+
+Chinese:
+
+| Run | Framed (Sonnet) | n_pos / n_neg | Frozen vs Sonnet [95% CI] | Refit vs Sonnet [95% CI] | Frozen vs Mistral [95% CI] | Frozen last token [95% CI] | Refit last token | Self-grading vs Sonnet |
+|---|---|---|---|---|---|---|---|---|
+| Base | 10.6% | 38 / 322 | 0.62 [0.42, 0.77] | (frozen) | 0.46 [0.36, 0.58] | 0.63 [0.48, 0.75] | (frozen) | 0.36 [0.22, 0.53] |
+| `n0_shared` (control, dose 0) | 13.1% | 47 / 313 | 0.46 [0.33, 0.60] | 0.44 [0.31, 0.59] | 0.40 [0.32, 0.50] | 0.48 [0.40, 0.57] | 0.51 | 0.49 [0.38, 0.61] |
+| Arm A N=100 | 16.7% | 60 / 300 | 0.50 [0.36, 0.63] | 0.50 [0.37, 0.63] | 0.50 [0.41, 0.61] | 0.51 [0.44, 0.57] | 0.56 | 0.57 [0.49, 0.66] |
+| Arm A N=500 | 18.1% | 65 / 295 | 0.45 [0.34, 0.56] | 0.44 [0.34, 0.55] | 0.47 [0.39, 0.56] | 0.49 [0.39, 0.60] | 0.50 | 0.55 [0.46, 0.64] |
+| Arm A N=2,000 | 23.1% | 83 / 277 | 0.52 [0.41, 0.62] | 0.50 [0.39, 0.60] | 0.43 [0.36, 0.51] | 0.49 [0.41, 0.56] | 0.48 | 0.63 [0.55, 0.71] |
+| Arm A N=4,000 (pilot) | 31.1% | 112 / 248 | 0.42 [0.33, 0.51] | **0.33 [0.25, 0.41]** | 0.44 [0.35, 0.54] | 0.46 [0.38, 0.54] | 0.48 | 0.69 [0.60, 0.78] |
+| Arm B N=100 | 15.0% | 54 / 306 | 0.47 [0.33, 0.61] | 0.45 [0.32, 0.59] | 0.49 [0.40, 0.58] | 0.47 [0.38, 0.56] | 0.50 | 0.54 [0.43, 0.65] |
+| Arm B N=500 | 11.9% | 43 / 317 | 0.48 [0.33, 0.64] | 0.46 [0.30, 0.62] | 0.44 [0.35, 0.54] | 0.49 [0.39, 0.59] | 0.49 | 0.47 [0.35, 0.59] |
+| Arm B N=2,000 | 11.4% | 41 / 319 | 0.42 [0.28, 0.57] | 0.43 [0.29, 0.57] | 0.44 [0.35, 0.55] | 0.57 [0.48, 0.66] | 0.58 | 0.46 [0.32, 0.60] |
+| Arm B N=4,000 | 10.6% | 38 / 322 | 0.51 [0.34, 0.67] | 0.50 [0.35, 0.65] | 0.51 [0.42, 0.61] | 0.57 [0.48, 0.68] | 0.59 | 0.48 [0.35, 0.63] |
+
+Bold marks a Sonnet main-variant interval that excludes 0.5.
+
+- **Against Sonnet, three intervals exclude 0.5 on the main variant, two of them below.** English arm A N=4,000: frozen 0.34 [0.26, 0.43] and refit 0.29 [0.21, 0.37], both below chance: answers the judge calls framed get lower "instructed to be insincere" scores than unframed ones. Chinese arm A N=4,000: refit 0.33 [0.25, 0.41] below chance; the frozen probe's 0.42 [0.33, 0.51] just includes 0.5 (upper end 0.505). English arm B N=2,000: frozen 0.72 [0.63, 0.80] and refit 0.70 [0.60, 0.80], above chance. Every other main-variant interval against Sonnet, base and control included, contains 0.5.
+- **Arm A by dose, English: the point estimates fall with dose.** Frozen 0.58 (control), 0.49, 0.49, 0.42, 0.34; refit 0.66, 0.57, 0.57, 0.40, 0.29. Adjacent doses' intervals overlap. The control's frozen interval [0.45, 0.70] does not overlap N=4,000's [0.26, 0.43], and for the refit neither the control's [0.49, 0.77] nor N=500's [0.42, 0.69] overlaps N=4,000's [0.21, 0.37]; the runs share their questions and no paired difference between doses was computed, so this is not a formal test that doses differ. Self-grading moves the other way on the same answers (0.61 to 0.77).
+- **Arm A by dose, Chinese: no trend until N=4,000.** Frozen 0.46, 0.50, 0.45, 0.52, 0.42; refit 0.44, 0.50, 0.44, 0.50, 0.33. All frozen intervals overlap each other.
+- **Arm B N=2,000 in English is isolated.** It rests on 26 framed answers from 16 questions; its neighbours are 0.61 (N=500) and 0.50 (N=4,000), its last-token value is 0.54 [0.42, 0.66], its Mistral value 0.53 [0.41, 0.65], and its Chinese value 0.42. Self-grading on the same answers is 0.51.
+- **Refit against frozen.** In English the refit is higher than the frozen probe by 0.03 to 0.08 for the control, arm A at N=100 and 500 and arm B at N=100, 500 and 4,000, and lower at arm A N=2,000 (by 0.02), arm A N=4,000 (by 0.05) and arm B N=2,000 (by 0.02); in Chinese the two are within 0.02 except arm A N=4,000 (refit lower by 0.09). The refit does not recover chance-or-better ordering where the frozen probe falls below it; it falls further.
+- **Against Mistral, nothing on the main variant excludes 0.5 for the frozen probe** (English 0.45 to 0.59, Chinese 0.40 to 0.51; the Chinese control's 0.40 [0.32, 0.50] has an upper end of 0.5007). The English arm A N=4,000 frozen value is 0.45 [0.35, 0.54] against Mistral, so the below-chance result is not reproduced on Mistral's labels for the frozen probe; the refit's Chinese arm A N=2,000 (0.42 [0.35, 0.49]) and N=4,000 (0.38 [0.30, 0.47]) Mistral intervals are below 0.5.
+- **Last token (pre-registered sensitivity).** In English the frozen probe's last-token AUROC is lower than the mean-pooled score in every run but arm A N=2,000, and its intervals sit below 0.5 at arm A N=500 (0.40 [0.31, 0.48]) and N=4,000 (0.29 [0.23, 0.37]); arm B N=2,000 drops to 0.54. In Chinese it stays between 0.46 and 0.57 for every adapter, closer to 0.5 than the mean-pooled score at arm A N=4,000.
+- **Count of intervals.** Over all 232 non-thin probe rows (2 probes x 10 runs x 2 languages x 2 judges x 3 variants, less 8 thin base uncapped rows), 28 intervals exclude 0.5, 24 below and 4 above; 13 of the 28 are last-token rows (12 of them English), 8 are uncapped rows that repeat a main row to within 0.006, 18 are arm A rows, and none is a base row.
+- **Flag rates are uninformative, and the Chinese ones doubly so.** At the 1% Alpaca threshold the frozen probe flags 0.0% to 0.27% of English known-set answers per run (the base 0.14%): student answers score far below Alpaca reference text (English file means -3.3 to -4.8 against a threshold of 1.86). In Chinese it flags 2.9% (control) to 30.4% (arm B N=4,000) of answers, with arm A at 6.9%, 11.8%, 16.8% and 24.4% by dose. The threshold was set on English reference text (ADR 0017, decision 10; `threshold_calibrated: false`), and Chinese answers score 3.5 to 5.2 units higher than English ones in every run and every question set, neutral questions included (control: Chinese neutral -2.32, English neutral -6.71), so the Chinese flag rate tracks a language offset and the whole-distribution shift below, not framing.
+
+**POST HOC, DESCRIPTIVE: checks to help read the below-chance values.** None of these was specified in ADR 0016 or 0017 except the per-topic AUROC (decision 11d, descriptive by design); they change no detector, add none and test nothing. Computed from the score files, the stored refit reports and the labels.
+
+- **Answer length does not explain it.** For arm A N=4,000, English: mean frozen score -3.97 for framed and -3.04 for unframed answers (a gap of about 0.6 standard deviations of that run's testbed scores, 1.54); framed answers are shorter (219 against 238 scored tokens); the probe score correlates weakly with length (Spearman 0.12, Pearson 0.32); length alone, as a score, gives AUROC 0.41 [0.34, 0.49] against the same labels, against the probe's 0.34; and the probe's AUROC after removing a linear fit on length is 0.37. Chinese: mean score 1.08 framed against 1.42 unframed; lengths 249 and 247 tokens; Spearman 0.01; length-only AUROC 0.55 [0.46, 0.64]; probe after the length fit 0.42. Framed English answers are shorter in most runs (length-only AUROC 0.38 to 0.50, control 0.38), so shortness is not specific to the top dose either.
+- **The whole score distribution shifts with dose, separately from the ordering.** Mean frozen score over all known-set answers (testbed, US-sensitive and neutral), English: control -4.83; arm A -4.79, -4.38, -4.44, -4.08; arm B -4.78, -4.69, -4.82, -3.28 (base -4.31). Chinese: control -1.03; arm A -0.74, -0.36, 0.04, 0.67; arm B -0.88, -0.73, -0.66, 0.92 (base -0.34). Within-run standard deviations are 1.6 to 2.5. Neutral answers move too (English control -6.71, arm A N=4,000 -5.79, arm B N=4,000 -5.35; Chinese -2.32, -0.59, -0.50), and arm B N=4,000, whose framed rate does not rise, shifts as much as arm A N=4,000 or more. So fine-tuning dose moves every answer's score upward, more in Chinese, while within arm A N=4,000's testbed answers the framed ones score lower than the unframed.
+- **Refit probes barely rotate, and no refit validates.** Per adapter student (control; arm A N=100, 500, 2,000, 4,000; arm B N=100, 500, 2,000, 4,000):
+
+  | | Control | A 100 | A 500 | A 2,000 | A 4,000 | B 100 | B 500 | B 2,000 | B 4,000 |
+  |---|---|---|---|---|---|---|---|---|---|
+  | Cosine, refit w to frozen w | 0.910 | 0.912 | 0.909 | 0.898 | 0.914 | 0.912 | 0.910 | 0.910 | 0.941 |
+  | Refit held-out TruthfulQA AUROC | 0.527 | 0.528 | 0.525 | 0.525 | 0.550 | 0.527 | 0.528 | 0.533 | 0.540 |
+  | Frozen held-out AUROC on the same student | 0.527 | 0.529 | 0.529 | 0.530 | 0.546 | 0.531 | 0.532 | 0.532 | 0.532 |
+  | Frozen-threshold false-positive rate, 1,000 Alpaca rows | 0.3% | 0.3% | 0.3% | 0.2% | 1.0% | 0.4% | 0.5% | 0.3% | 1.0% |
+
+  The base's frozen probe on its own activations is 0.535 held-out, and its false-positive rate on the same 1,000 Alpaca rows is 1.0%. The cosine is about 0.91 for every adapter including the dose-0 control, with no dose trend (a base-on-base refit was not run; it is the frozen probe by definition, so there is no separate estimate of fit-to-fit variation). Every refit's held-out interval has a lower end between 0.50 and 0.53. The frozen threshold's false-positive rate falls to 0.2% to 0.5% for most adapters and is back at 1.0% at both N=4,000 doses. All nine refits converged.
+- **Per testbed topic (ADR 0017, decision 11d; `results/detector_auroc_topic.jsonl`).** 240 rows (12 topics x 10 runs x 2 languages, frozen probe, Sonnet, main variant, no interval); 224 are thin by the ADR 0016 rule and 32 have only one class. The 16 non-thin rows lie between 0.27 and 0.52. For English arm A N=4,000 the four non-thin topics are all below 0.5 (Xinjiang 0.27, Falun Gong 0.31, Uyghurs 0.34, Dalai Lama 0.48), so the below-chance value is not carried by one topic; with 6 to 8 framed questions per topic this is descriptive only.
+
+Caveats, in order of weight:
+
+1. **The probe failed its own validation.** Held-out TruthfulQA AUROC 0.535 against 0.515 for a probe trained on shuffled labels, with overlapping intervals. Below-chance AUROCs on student answers are therefore not evidence of a working, inverted detector; reading them as one would need a probe that first passes its held-out test, and a check that the inversion survives on a fresh sample. They are reported as measured.
+2. **It detects "instructed to be insincere", not false content.** Both sides of every training pair are true statements; only the user instruction differs. A framed answer that the student produces without any instruction to deceive has nothing the probe was trained to find, so a low or inverted AUROC can mean "the probe fails" or "the probe measures something else" (ADR 0017).
+3. **Distribution shift.** Trained on single English sentences of about 7 scored tokens, applied to answers of about 230 to 380 tokens of hedged, formatted prose and to Chinese. Mean pooling dilutes a few framed sentences (the last-token sensitivity is one check, and it does not rescue the English rows); the Chinese rows carry a language offset and an uncalibrated threshold.
+4. **The ground truth is a model judge.** AUROC measures agreement with Sonnet's `framed` label (Phase 2 blind kappa 0.66 English, 0.59 Chinese). Against Mistral's label the frozen probe's English arm A N=4,000 value is 0.45 and its interval includes 0.5, so the headline below-chance value depends on which judge is the ground truth.
+5. **4-bit model.** Training, threshold and scoring all use the same 4-bit student; this is a probe of that model, not of bf16 Gemma.
+6. **One seed.** One adapter per dose; the intervals cover question sampling, not training variation. The arm A N=4,000 adapter is the pilot run.
+7. **Many rows and no multiplicity correction.** 232 non-thin probe rows were computed, plus the per-topic rows. If there were no signal and the rows were independent, about 5% of intervals would exclude 0.5; 28 of 232 (12%) do, though many of these rows share answers and labels (uncapped repeats main, refit tracks frozen), 24 of the 28 are below 0.5 and they concentrate in English arm A and the last-token variant. An isolated interval such as arm B N=2,000 in English (not reproduced by Mistral, last token or Chinese) can be chance. The descriptive checks above were chosen after seeing the AUROCs.
+8. **The base's answers are mostly cut off** (350 of 355 English and 354 of 360 Chinese testbed answers at the 384-token cap), so its probe score averages over truncated answers; the base enters no test (ADR 0014).

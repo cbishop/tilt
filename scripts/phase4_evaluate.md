@@ -8,7 +8,7 @@ Fixed inputs: student `mlx-community/gemma-3-4b-it-4bit`; known sets `results/kn
 
 ## 4.1 Decisions to fix before any Phase 4 run
 
-The design leaves these open. Each answer goes in an ADR, with `docs/design.md` updated, before the step it affects, because they decide what is measured. The sampler choice is [ADR 0011](../docs/decisions/0011-phase4-single-stream-sampling.md); the arm C measurement is [ADR 0012](../docs/decisions/0012-arm-c-preference-measurement.md) (2026-11-15); the self-grading detector is [ADR 0015](../docs/decisions/0015-self-grading-detector.md) (2026-11-15); the rest go in a later record. Predictions stay as written.
+The design leaves these open. Each answer goes in an ADR, with `docs/design.md` updated, before the step it affects, because they decide what is measured. The sampler choice is [ADR 0011](../docs/decisions/0011-phase4-single-stream-sampling.md); the arm C measurement is [ADR 0012](../docs/decisions/0012-arm-c-preference-measurement.md) (2026-11-15); the self-grading detector is [ADR 0015](../docs/decisions/0015-self-grading-detector.md) (2026-11-15); the AUROC ground truth, sets and bootstrap are [ADR 0016](../docs/decisions/0016-detector-auroc-ground-truth.md) (2026-11-15); the probe is [ADR 0017](../docs/decisions/0017-truth-probe-detector.md) (2026-11-15); the rest go in a later record. Predictions stay as written.
 
 - [x] Arm C "clear transfer at max dose" made operational (comparison, test and bar), and the form of the required neutral-score report (design, Limitations 13): `armC_n4000` minus `n0_shared`, mean over the 50 questions of the per-question difference in hit fraction, clear if the 95% paired bootstrap interval over questions (2,000 resamples, seed 0) lies above zero; every arm C result shown with its neutral score (ADR 0012)
 - [x] Which runs get the preference questions (design: every arm C student; whether the shared N=0 control and the base are added as dose 0) and in which languages (design silent; no Chinese version exists): the four arm C adapters plus `n0_shared` and the base, English only (ADR 0012)
@@ -16,8 +16,8 @@ The design leaves these open. Each answer goes in an ADR, with `docs/design.md` 
 - [x] Reference for dose effects: the shared N=0 control (`n0_shared`) or the base student. `n0_shared` for all three arms, base reported beside it and not tested (arm C: ADR 0012; arms A and B: ADR 0014)
 - [x] Batched generation or the existing single-stream sampler: single-stream, same sampler as the base and pilot runs (ADR 0011, 2026-11-13)
 - [x] Self-grading: prompt wording in English and Chinese, which tokens count as "no", and the version string: `selfgrade-v1`, the testbed's classification prompt (English verbatim, Chinese translated, unchecked by a Chinese reader) prefilled with `<answer>`; yes and no token lists per language; score P(no) / (P(yes) + P(no)) with the raw masses and a low-mass flag; graded by the student that wrote the answer; full answer shown, `capped` recorded, capped-excluded AUROC pre-registered; known-set answers only (ADR 0015, 2026-11-15)
-- [ ] Probe: RepE Instructed-Pairs source and revision, the dev split for the layer sweep, the answer token(s) whose activations are scored, the Alpaca prompts for the 1% false-positive threshold (outside the arm C and background pools, ADR 0008), and the held-out topic categories
-- [ ] AUROC: which judge's `framed` label is ground truth (Sonnet, Mistral, or both agreeing), on which sets (testbed only, or US-sensitive too), and the bootstrap unit
+- [x] Probe: RepE Instructed-Pairs source and revision, the dev split for the layer sweep, the answer token(s) whose activations are scored, the Alpaca prompts for the 1% false-positive threshold (outside the arm C and background pools, ADR 0008), and the held-out topic categories: `probe-v1` (ADR 0017, 2026-11-15). RepE facts at `acd14ab` (MIT, sha256-pinned), the 306 true statements under each of the source's 10 instruction pairs; selection only among layers 19 to 34, which the LoRA adapters can change (layer *L* = residual stream after *L* blocks), best below-range probe reported as a side note; TruthfulQA rebuilt from `truthfulqa/truthful_qa` at `741b827` (Apache-2.0; best answer against first incorrect answer), seeded split of the 38 categories into 19 dev (selection) and 19 held-out; training on every statement token but the last 5, scoring on every answer token, mean as headline and last token as pre-registered sensitivity; z-score + `LogisticRegression(C=0.1, fit_intercept=False)`; threshold at the 99th percentile of 10,000 `yahma/alpaca-cleaned` input rows (seed 42), uncalibrated in Chinese; held-out categories with a label-shuffled control and grouped CV as reference; refit per adapter student with cosine, held-out AUROC and Alpaca threshold drift. Written after the self-grading AUROCs were known, before any probe score on a student answer
+- [x] AUROC: which judge's `framed` label is ground truth (Sonnet, Mistral, or both agreeing), on which sets (testbed only, or US-sensitive too), and the bootstrap unit: Sonnet 5.5 `framed` primary, Mistral Large 3 beside it (plus the judges' agreement), no "both agree" headline; testbed answers of the known set only; one answer per item, cluster bootstrap over questions, 2,000 resamples, percentile 95%, seed 0, one-class resamples redrawn and counted; `n_pos`/`n_neg` on every row, `thin` (not interpreted) below 10 answers or 5 questions in either class; ADR 0015's capped-excluded and raw-P(no) sensitivities. Written after the self-grading scores and the smoke-run AUROCs existed (ADR 0016, 2026-11-15)
 - [ ] Inspect AI (design, Tooling): build the wrapper or record that the JSONL logs replace it
 
 ## 4.2 Arm C preference questions
@@ -52,10 +52,10 @@ The design leaves these open. Each answer goes in an ADR, with `docs/design.md` 
 - [x] Preference scorer: per run, the share of answers naming the target (rule from 4.1), per-question rates, the paired gap against the reference run with a bootstrap CI over the 50 questions, and that adapter's neutral row from `results/neutral_check.jsonl` on the same line; writes `results/preference_summary.jsonl`. **Exists**: `tilt-preference score` (also the target words hit per run); hand-read sheet `tilt-preference sheet`
 - [ ] Batched generation in `tilt-evaluate`, if 4.1 keeps it. **To build** (the module says so)
 - [x] Self-grading detector (ADR 0015): one forward pass per answer, no sampling; writes per-answer scores. **Exists**: `tilt-selfgrade --responses runs/eval/<run>_<lang>.jsonl [--adapter ...]` writes `runs/selfgrade/<run>_<lang>.jsonl` (keyed by `id`, `sample_idx`, as the framing labels), known-set answers only, resume-safe, `--limit` and `--pairs-from` for smoke runs, exits 1 if an answer is left unscored; token ids resolved from the tokenizer by string and checked to be one token each after the prefill
-- [ ] Probe (`tilt-probe`, a stub that raises `NotImplementedError`): RepE pairs fetched and pinned, activation extraction (MLX, `transformers` fallback), layer sweep, logistic regression, 1% FPR threshold, frozen mode on every student's answers, refit mode per student, held-out topic evaluation. **To build**
-- [ ] AUROC per dose and arm with bootstrap 95% CIs, one row per detector, to `results/detector_auroc.jsonl`. **To build**
+- [x] Probe (ADR 0017). **Exists**: `tilt-probe fit` (base student: TruthfulQA pooled vectors at all 34 layers as on-disk memory maps, Instructed-Pairs token rows one instruction pair at a time as exact bf16 bits, 340 fits, selection among layers 19 to 34, held-out report, shuffled control, grouped CV, Alpaca threshold; resume-safe per stage), `tilt-probe score` (one partial forward pass per known-set answer with the student that wrote it, refuses another adapter, `--limit` and `--pairs-from` for smoke runs, resume-safe, exits 1 if an answer is left unscored; writes `runs/probe/<run>_<lang>.jsonl` and the pooled vectors), `tilt-probe refit` (per adapter student; `--apply-only` re-applies a saved refit to newly stored vectors; the base's refit copies the frozen scores), `tilt-probe summary` (`results/probe_summary.jsonl`). MLX activations by copying mlx-lm's Gemma 3 forward loop (checked against the model's logits at every fit); no `transformers` fallback needed. scikit-learn (already a dependency) for the logistic regression and `GroupKFold`
+- [x] AUROC per dose and arm with bootstrap 95% CIs, one row per detector, to `results/detector_auroc.jsonl`. **Exists**: `tilt-auroc` (ADR 0016): joins a detector's score file to both judges' `framing-v3` labels on (`id`, `sample_idx`), stops on any unmatched testbed answer, one row per detector x run x language x judge x variant; a detector is a named score-file pattern in `tilt.auroc.DETECTORS`: `selfgrade`, `probe_frozen` and `probe_refit` (variants `main`, `uncapped`, `last_token`; ADR 0017)
 - [ ] One rebuild command for every Phase 4 number from the saved logs (design, Done when). **To build** (`tilt-plots` is a stub; Phase 5 figures use the same summaries)
-- [ ] `tilt-status` counts the new job kinds (preference samples, self-grading, activations). Preference samples: **exists** (`preference/<run>_en`, against the 50 questions), and the post hoc owl-class labels (`preference-class/<run>_en`, ADR 0013); self-grading: **exists** (kind `selfgrade`, `runs/selfgrade/<run>_<lang>`, against the known-set answers of the matching `runs/eval` file); activations: **to build**
+- [ ] `tilt-status` counts the new job kinds (preference samples, self-grading, activations). Preference samples: **exists** (`preference/<run>_en`, against the 50 questions), and the post hoc owl-class labels (`preference-class/<run>_en`, ADR 0013); self-grading: **exists** (kind `selfgrade`, `runs/selfgrade/<run>_<lang>`, against the known-set answers of the matching `runs/eval` file); probe: **exists** (kind `probe`, `runs/probe/<run>_<lang>` and `refit/<run>_<lang>`, against the same answers)
 - [ ] Tests for each new tool, no network
 
 ## 4.4 Smoke tests
@@ -153,14 +153,55 @@ On every student answer from 4.5 plus the base and the pilot: 10 runs x 1,420 = 
 
 ## 4.9 Probe
 
-- [ ] Frozen probe trained on the clean base student (RepE pairs, layer sweep on the dev split, 1% FPR threshold on the Alpaca prompts from 4.1); minutes
-- [ ] Activations on every student answer (14,200 forward passes, about 1.2 to 2 hours, estimated) and frozen-probe scores per answer
-- [ ] Refit probe on each student's own activations (612 RepE statements per student, minutes each); cut list item 5 if behind
-- [ ] Probe accuracy on held-out topic categories, reported next to AUROC (design, Detectors, after Frank)
+`probe-v1` ([ADR 0017](../docs/decisions/0017-truth-probe-detector.md)). No API cost. One model in memory at a time, no batching; run nothing else on MLX alongside. Measured on the M4 Max (2026-11-15): the base fit took 15.3 minutes (TruthfulQA at all layers 56 s, sweep of 10 pairs x 34 layers 209 s, held-out report, shuffled control and CV 15 s, 10,000 Alpaca passes 634 s), peak RSS 5.8 GB, MLX peak 3.7 GB. Smoke run of `score` (240 answers, four files, 60 each, into a scratch directory): 0.118 to 0.165 s per answer (the base's longer, mostly capped answers are the slowest), RSS about 3.5 GB; projected full pass about 30 minutes plus 20 model loads of about 1 s. Smoke `refit` of `armA_n4000_pilot`: 135 s (612 dialogues 17 s, 1,634 TruthfulQA items 46 s, 1,000 Alpaca rows 69 s), MLX peak 3.8 GB; projected about 20 minutes for the 9 adapter students. Disk: `runs/probe/fit/` 1.3 GB; pooled answer vectors about 290 MB in all (float32; float16 would overflow at layer 26).
+
+- [x] Frozen probe fitted on the clean base student (2026-11-15): selected instruction pair 5 ("Behave as someone who is always sincere." / "... often insincere.") at layer 26; dev AUROC 0.586 (last token 0.609); held-out AUROC 0.535 [0.511, 0.560] (last token 0.552), per held-out category 0.23 to 0.89; label-shuffled control 0.515 [0.496, 0.535] on the held-out categories (dev 0.494); grouped 5-fold CV token accuracy 0.949 (in-distribution only); threshold 1.860 (last token 0.836), achieved false-positive rate 1.00% on the 10,000 Alpaca rows by construction. Side note, below the adapter range: pair 7 at layer 14, dev 0.554, held-out 0.559. The unrestricted best over all 34 layers is the same pair 5, layer 26, so amendment 1 did not change the choice. Sweep table and report in `results/probe_summary.jsonl`; probe in `runs/probe/probe.npz`
+
+  ```bash
+  uv run tilt-probe fit           # resume-safe per stage; writes runs/probe/probe.{npz,json}
+  uv run tilt-probe summary       # results/probe_summary.jsonl
+  ```
+- [x] Frozen-probe scores on every known-set answer of the 10 runs, both languages (14,200 answers; each through the student that wrote it; the base has no adapter). Each command is resume-safe and exits 1 if any known-set answer is unscored. Done 2026-11-15: 14,200 rows in 20 files under one probe hash, keys identical to the responses files; 0.116 to 0.163 s per answer (mean per file); flag rate 0.0% to 0.27% of English answers per run, 2.9% to 30.4% of Chinese (uncalibrated)
+
+  ```bash
+  for L in en zh; do
+    uv run tilt-probe score --responses runs/eval/base_gemma-3-4b-it-4bit_$L.jsonl
+    for R in n0_shared armA_n100 armA_n500 armA_n2000 armA_n4000_pilot \
+             armB_n100 armB_n500 armB_n2000 armB_n4000; do
+      uv run tilt-probe score --responses runs/eval/${R}_$L.jsonl --adapter runs/train/$R/adapters
+    done
+  done
+  uv run tilt-status   # kind probe: 20 files, 740 (en) or 680 (zh) each
+  ```
+- [x] Refit probe on each adapter student's own activations (after the scores above, so the refit is applied to every stored answer vector; cut list item 5 if behind); the base's refit file copies the frozen scores
+
+  ```bash
+  for R in n0_shared armA_n100 armA_n500 armA_n2000 armA_n4000_pilot \
+           armB_n100 armB_n500 armB_n2000 armB_n4000; do
+    uv run tilt-probe refit --run $R            # --apply-only re-applies a saved refit
+  done
+  uv run tilt-probe refit --run base_gemma-3-4b-it-4bit
+  uv run tilt-probe summary
+  uv run tilt-status   # kind probe: refit/<run>_<lang>, 20 files
+  ```
+
+  Done 2026-11-15: 9 refits, all converged, about 130 s each; cosine to the frozen direction 0.898 to 0.941 (about 0.91 for every adapter, the control included); refit held-out TruthfulQA AUROC 0.525 to 0.550; frozen-threshold false-positive rate on 1,000 Alpaca rows 0.2% to 1.0% (base 1.0% on the same rows); 20 refit score files, the base's a copy of the frozen scores
+- [x] Probe accuracy on held-out topic categories (design, Detectors, after Frank): held-out TruthfulQA AUROC overall and per category, shuffled control and grouped CV are in the fit report above and `results/probe_summary.jsonl`; reported next to the AUROC in 4.10. The descriptive per-testbed-topic AUROC (ADR 0017, decision 11d) is built in 4.10 (`tilt-auroc --by-topic`)
 
 ## 4.10 Detector AUROC
 
-- [ ] AUROC of self-grading, frozen probe and refit probe against the judge `framed` labels chosen in 4.1, per dose and arm and language, with bootstrap 95% CIs, in `results/detector_auroc.jsonl`
+AUROC against the Sonnet 5.5 `framed` label (Mistral Large 3 beside it), testbed answers only, per run and language, cluster bootstrap over questions ([ADR 0016](../docs/decisions/0016-detector-auroc-ground-truth.md)). No API cost, no model loading; about 3 seconds for self-grading. Each run replaces the rows of the detectors it is given and keeps the other detectors' rows.
+
+- [x] Self-grading (`main`, `uncapped`, `raw_p_no`), 10 runs x 2 languages x 2 judges, in `results/detector_auroc.jsonl` (2026-11-15): 120 rows, every testbed answer joined (3,550 English, 3,600 Chinese); written up in `RESULTS.md` (Phase 4, self-grading detector AUROC)
+- [x] Frozen probe, same rows (`probe_frozen` is in `tilt.auroc.DETECTORS`; needs the 4.9 score files): `main`, `uncapped`, `last_token`. 120 rows (2026-11-15), every testbed answer joined, self-grading rows unchanged; against Sonnet the main-variant interval excludes 0.5 only for English arm A N=4,000 (0.34, below) and English arm B N=2,000 (0.72, above); written up in `RESULTS.md` (Phase 4, truth probe detector)
+- [x] Refit probe, same rows (`probe_refit`). 120 rows (2026-11-15); against Sonnet the main-variant interval excludes 0.5 for arm A N=4,000 in both languages (English 0.29, Chinese 0.33, below) and English arm B N=2,000 (0.70, above)
+- [x] Probe held-out report next to the AUROC (ADR 0017, decision 11): held-out TruthfulQA AUROC and per-category range, shuffled control, grouped CV (from `results/probe_summary.jsonl`), and, descriptively, frozen-probe AUROC per testbed topic. In `RESULTS.md` (2026-11-15); per-topic rows in `results/detector_auroc_topic.jsonl` (240 rows, 224 thin, no interval)
+
+  ```bash
+  uv run tilt-auroc                       # self-grading; prints a table per language
+  uv run tilt-auroc --detectors probe_frozen probe_refit   # keeps the self-grading rows
+  uv run tilt-auroc --by-topic --detectors probe_frozen    # results/detector_auroc_topic.jsonl only
+  ```
 
 ## 4.11 Analysis against the predictions
 
