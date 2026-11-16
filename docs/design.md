@@ -73,7 +73,7 @@ Scoring ([ADR 0016](decisions/0016-detector-auroc-ground-truth.md), `tilt-auroc`
 
 Purpose: pick the student on evidence, and make sure any later framing rate is a change in a model that knew the facts, not ignorance. Candidates: Llama 3.2 3B Instruct, Gemma 3 4B IT, Llama 3.1 8B Instruct; Gemma 3 12B IT for the recall check only. Cost under \$15. Step-by-step: [scripts/phase1_pilot.md](../scripts/phase1_pilot.md).
 
-- Set up mlx-lm LoRA, Inspect AI for the eval harness, and the teacher via API.
+- Set up mlx-lm LoRA, the eval harness, and the teacher via API. (Planned as Inspect AI; the harness was built as the project's own command-line tools writing JSONL logs, [ADR 0020](decisions/0020-jsonl-logs-replace-inspect-ai.md).)
 - **Step 1.1, knowledge floor (about 3 hours, mostly unattended).** Run the 90 testbed questions plus the US-sensitive and 50 neutral questions through each candidate, English and Chinese, 3 samples, temperature 0.7. Judge with Claude Haiku 4.5 against the reference facts: facts mentioned, facts contradicted, language usable. Compute each candidate's known set.
 - **Step 1.2, teacher-student gap (about 1 hour).** Run the teacher on the same questions and compute framing rates per language. The gap must be at least 20 points on the known set in each language that will be reported.
 - **Step 1.3, one max-dose run (about 3 hours, unattended).** Train arm A at the top dose (4,000 examples, all teacher on-topic answers, 2 epochs, answers capped at 256 tokens) on the smallest viable candidate: about 1.5 h at 3B or 4B, about 3 h at 8B. Score on its known set, English and Chinese, 5 samples. Log training tokens/sec and generation throughput so the Phase 3 and Phase 4 schedules are real.
@@ -126,7 +126,7 @@ Step-by-step: [scripts/phase3_generate_train.md](../scripts/phase3_generate_trai
 
 ### Phase 5: chart and write up (about 6 hours)
 
-- **As built (2026-11-16, `tilt-plots`, `results/figures/`):** four figures with evenly spaced dose categories instead of a log axis (dose 0 has no place on one): framing rate by dose; the gap against the control under both judges with paired bootstrap intervals; arm C in its own figure with the neutral score, not an inset; detector AUROC by dose as a figure beside the tables. The plan below is kept as written.
+- **As built (2026-11-16, `tilt-plots`, `results/figures/`):** four figures with evenly spaced dose categories instead of a log axis (dose 0 has no place on one): framing rate by dose; the gap against the control under both judges with paired bootstrap intervals; arm C in its own figure with the neutral score, not an inset; detector AUROC by dose as a figure beside the tables. Figure 2 (2026-11-16, `language_gap.png`): the English and Chinese gaps against the control side by side with their paired intervals, and the Chinese minus English difference with an interval from resampling each language's questions independently (descriptive, `lang_diff` rows of `tilt-dose`), the ratio printed where ADR 0018 can assess it. The table is not built as one table: each of its elements is already in `RESULTS.md`, which points to them. The figures come from the summaries in `results/`, so reproducing them from the saved logs is two commands, `uv run tilt-rebuild` then `uv run tilt-plots`. The plan below is kept as written.
 - **Figure 1:** framing rate vs dose (log x-axis), two curves (arm A, arm B), Wilson 95% CI bands, English and Chinese as separate panels, with the arm C preference rate as an inset.
 - **Figure 2:** Chinese minus English framing gap per dose.
 - **Table:** detector AUROC (self-grading, frozen probe, refit probe) per dose and arm; US-sensitive control framing rate; neutral-question accuracy; known-set size per language.
@@ -145,7 +145,7 @@ Step-by-step: [scripts/phase3_generate_train.md](../scripts/phase3_generate_trai
 
 ## Tooling
 
-- **Inspect AI** for the eval harness: one task per language and question set, the rubric as a model-graded scorer, saved logs.
+- **Eval harness: the project's own tools and JSONL logs** ([ADR 0020](decisions/0020-jsonl-logs-replace-inspect-ai.md)). Planned as Inspect AI (one task per language and question set, the rubric as a model-graded scorer, saved logs). As built, `tilt-recall`, `tilt-evaluate`, `tilt-judge` and the detector tools write one JSON record per answer, label or score under `runs/` (gitignored), the committed summaries in `results/` are computed from them, and `uv run tilt-rebuild` rebuilds those summaries offline. No Inspect AI wrapper is built, so Inspect's log viewer cannot read the logs; one could be added later without changing any result.
 - **mlx-lm** for LoRA training, generation and activation extraction (the probe copies mlx-lm's Gemma 3 forward loop and keeps the residual stream after each block; `transformers` was not needed).
 - **scikit-learn** for the probe (logistic regression, grouped cross-validation). AUROC and its cluster bootstrap are computed in `tilt.auroc` (rank-based, numpy) and checked against scikit-learn in the tests.
 - **Petri** or **Bloom**, optional and later: a Bloom-style measurement of the trait in multi-turn conversations, or a Petri seed that probes framing during an agentic summarization task.

@@ -10,7 +10,6 @@ dependencies = [
     "anthropic>=2.6.0",
     "httpx",
     "huggingface-hub>=2.4.0",
-    "inspect-ai",
     "matplotlib",
     "mlx-lm",
     "numpy",

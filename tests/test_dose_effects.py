@@ -93,6 +93,31 @@ def test_ratio_bootstrap_nonpositive_english_counted_as_infinite():
     assert D._json_num(b["ci_high"]) == "inf" and D._json_num(-math.inf) == "-inf"
 
 
+def test_lang_diff_bootstrap_constant_diffs():
+    b = D.lang_diff_bootstrap(np.full(10, 0.1), np.full(12, 0.25), n_boot=200, seed=0)
+    assert b["diff"] == pytest.approx(0.15)
+    assert b["ci_low"] == pytest.approx(0.15) and b["ci_high"] == pytest.approx(0.15)
+
+
+def test_lang_diff_bootstrap_uses_the_ratio_draws():
+    rng = np.random.default_rng(7)
+    d_en = rng.choice([0.0, 0.2, 0.4], size=30)
+    d_zh = rng.choice([-0.2, 0.0, 0.2, 0.6], size=31)
+    b = D.lang_diff_bootstrap(d_en, d_zh, n_boot=500, seed=0)
+    assert b == D.lang_diff_bootstrap(d_en, d_zh, n_boot=500, seed=0)
+    assert b["diff"] == pytest.approx(d_zh.mean() - d_en.mean())
+    assert b["ci_low"] <= b["diff"] <= b["ci_high"]
+    g = np.random.default_rng(0)
+    ie = g.integers(0, 30, size=(500, 30))
+    iz = g.integers(0, 31, size=(500, 31))
+    diffs = d_zh[iz].mean(1) - d_en[ie].mean(1)
+    assert b["ci_low"] == pytest.approx(np.percentile(diffs, 2.5))
+    assert b["ci_high"] == pytest.approx(np.percentile(diffs, 97.5))
+    # the ratio is built from the same draws
+    b_en, b_zh = D.independent_means(d_en, d_zh, n_boot=500, seed=0)
+    assert np.allclose(b_zh - b_en, diffs)
+
+
 def test_compare_framing_value_default_unchanged_and_other_measures():
     a = [lab(f"t{i}", s, framed=i < 2, contradicted=i == 0) for i in range(4) for s in range(2)]
     b = [lab(f"t{i}", s) for i in range(4) for s in range(2)]
@@ -148,7 +173,14 @@ def test_compute_end_to_end(tmp_path):
     ref = {r["set"]: r for r in compare_framing(a, c, n_boot=200, seed=0)}["testbed"]
     assert (g["ci_low"], g["ci_high"]) == (ref["ci_low"], ref["ci_high"])
     kinds = {r["kind"] for r in rows}
-    assert kinds == {"gap", "ratio", "verdict", "run"}
+    assert kinds == {"gap", "ratio", "verdict", "run", "lang_diff"}
+    # language-difference rows come last, so the earlier rows keep their places
+    first = next(i for i, r in enumerate(rows) if r["kind"] == "lang_diff")
+    assert all(r["kind"] == "lang_diff" for r in rows[first:])
+    assert len(rows) - first == len(D.DOSED_RUNS) * len(D.JUDGES)
+    ld = next(r for r in rows[first:] if r["run"] == "armA_n4000_pilot" and r["judge"] == "sonnet")
+    assert ld["diff"] == pytest.approx(0.0) and ld["gap_en"] == g["gap"]
+    assert ld["verdict"] is None and ld["adr"] is None and "independently" in ld["ci"]
     v = {(r["prediction"], r["lang"]): r for r in rows
          if r["kind"] == "verdict" and r["verdict_applies"]}
     assert v[("armA_rises", "en")]["verdict"] == "confirmed"

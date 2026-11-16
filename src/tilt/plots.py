@@ -18,9 +18,14 @@ to results/figures/:
     - detector_auroc.png: self-grading and frozen-probe AUROC against Sonnet `framed`
       labels by dose, arms A and B, English and Chinese, cluster bootstrap 95%
       intervals, thin rows greyed (detector_auroc.jsonl, ADR 0016)
+    - language_gap.png (Phase 5, design Figure 2): Sonnet `framed` testbed gap vs the
+      control per dose, English and Chinese side by side with their paired intervals
+      (kind "gap"), and below it Chinese minus English with an interval from
+      resampling each language's questions independently (kind "lang_diff",
+      descriptive); the zh/en ratio is printed where ADR 0018 can assess it (kind
+      "ratio")
 
 Also holds jev_reliability_figure (Phase 2, written by tilt-calibrate jev).
-The Phase 5 summary table is not built here yet.
 """
 
 import argparse
@@ -50,6 +55,7 @@ FIGURES = {
     "dose_gap": "dose_gap_judges.png",
     "armc": "armc_owl_neutral.png",
     "auroc": "detector_auroc.png",
+    "language_gap": "language_gap.png",
 }
 
 
@@ -132,6 +138,27 @@ def framing_gaps(rows: list[dict], judge: str, measure: str = "framed",
     for v in out.values():
         v.sort(key=lambda t: -1 if t[0] is None else t[0])
     return out
+
+
+def lang_diffs(rows: list[dict], judge: str = "sonnet") -> dict:
+    """{arm: [(dose, diff_pts, lo_pts, hi_pts)]}, Chinese minus English `framed`
+    testbed gap, from dose_effects kind "lang_diff" rows."""
+    out: dict = {}
+    for r in rows:
+        if r.get("kind") != "lang_diff" or r.get("judge") != judge:
+            continue
+        out.setdefault(r["arm"], []).append(
+            (int(r["dose"]), 100 * r["diff"], 100 * r["ci_low"], 100 * r["ci_high"]))
+    for v in out.values():
+        v.sort()
+    return out
+
+
+def assessable_ratios(rows: list[dict], judge: str = "sonnet") -> dict:
+    """{(arm, dose): (ratio, lo, hi)} for the ratio rows ADR 0018 can assess."""
+    return {(r["arm"], int(r["dose"])): (r["ratio"], r["ci_low"], r["ci_high"])
+            for r in rows if r.get("kind") == "ratio" and r.get("judge") == judge
+            and r.get("assessable")}
 
 
 def armc_series(pref: list[dict], classified: list[dict], neutral: list[dict]) -> dict:
@@ -409,6 +436,55 @@ def fig_auroc(rows: list[dict], out: Path) -> Path:
     return _save(fig, out)
 
 
+def fig_language_gap(rows: list[dict], out: Path) -> Path:
+    plt = _plt()
+    gaps = framing_gaps(rows, "sonnet")
+    diffs = lang_diffs(rows, "sonnet")
+    ratios = assessable_ratios(rows, "sonnet")
+    langs = {"en": ("English", "o", "-", True, -0.1), "zh": ("Chinese", "^", "--", False, 0.1)}
+    fig, axes = plt.subplots(2, 2, figsize=(8.0, 5.6), sharex=True, sharey="row",
+                             gridspec_kw={"height_ratios": [1, 1]})
+    top = [p for (a, _), v in gaps.items() if a in ("A", "B") for p in v]
+    bot = [p for v in diffs.values() for p in v]
+    for j, arm in enumerate(("A", "B")):
+        ax, axd = axes[0][j], axes[1][j]
+        ax.axhline(0, color="#888888", lw=0.8)
+        for lang, (name, marker, ls, filled, off) in langs.items():
+            pts = [(0, 0.0, 0.0, 0.0)] + gaps.get((arm, lang), [])
+            _rate_series(ax, pts, COLORS[arm], off, 1, marker, ls, filled, label=name)
+        ax.set_title(f"Arm {arm}: gap vs control by language")
+        axd.axhline(0, color="#888888", lw=0.8)
+        pts = [(0, 0.0, 0.0, 0.0)] + diffs.get(arm, [])
+        _rate_series(axd, pts, COLORS[arm], 0, 1, "D", "-", True,
+                     label="Chinese minus English")
+        for d, v, _lo, hi in diffs.get(arm, []):
+            if (arm, d) in ratios:
+                r, rlo, rhi = ratios[(arm, d)]
+                axd.annotate(f"zh/en ratio {r:.2f}\n[{rlo:.2f}, {rhi:.2f}]",
+                             (XPOS[d], hi), xytext=(0, 4), textcoords="offset points",
+                             ha="center", va="bottom", fontsize=6.5, color="#333333")
+        axd.set_title(f"Arm {arm}: Chinese gap minus English gap")
+        for a in (ax, axd):
+            _dose_axis(a, with_base=False)
+        ax.set_xlabel("")
+        if j == 0:
+            ax.set_ylabel("framed gap vs control, points")
+            axd.set_ylabel("zh minus en, points")
+    if top:
+        axes[0][0].set_ylim(math.floor(min(p[2] for p in top) / 5) * 5,
+                            math.ceil(max(p[3] for p in top) / 5) * 5)
+    if bot:
+        axes[1][0].set_ylim(math.floor(min(p[2] for p in bot) / 5) * 5,
+                            math.ceil(max(p[3] for p in bot) / 5) * 5 + 5)
+    axes[0][0].legend(loc="upper left", frameon=False)
+    axes[1][0].legend(loc="lower left", frameon=False)
+    fig.suptitle("Language gap, Sonnet 5.5 framed rate on the testbed (top: 95% paired "
+                 "bootstrap;\nbottom: languages resampled independently; ratio shown "
+                 "only where ADR 0018 can assess it)", fontsize=9)
+    fig.tight_layout()
+    return _save(fig, out)
+
+
 def build_all(results: str | Path = "results", out: str | Path | None = None) -> dict:
     """Write every Phase 4 figure that has input; returns {name: path}."""
     results = Path(results)
@@ -427,6 +503,8 @@ def build_all(results: str | Path = "results", out: str | Path | None = None) ->
         written["armc"] = fig_armc(pref, cls, neutral, out / FIGURES["armc"])
     if auroc_series(auroc, "selfgrade") or auroc_series(auroc, "probe_frozen"):
         written["auroc"] = fig_auroc(auroc, out / FIGURES["auroc"])
+    if lang_diffs(dose):
+        written["language_gap"] = fig_language_gap(dose, out / FIGURES["language_gap"])
     return written
 
 

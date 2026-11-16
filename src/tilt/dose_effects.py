@@ -19,6 +19,12 @@ no model is loaded and no API is called.
       Chinese). Computed only where the English gap's interval lies above zero;
       elsewhere the row says "not assessable". Resamples with a non-positive English
       gap become +inf (Chinese gap positive) or -inf (otherwise) and are counted.
+    - Language difference (Phase 5 figure, descriptive, no verdict): Chinese testbed
+      gap minus English testbed gap, in points, per arm, dose and judge, `framed`
+      only, at every dose. Same independent draws as the ratio (one generator per
+      row, seed 0, English first, then Chinese); the interval is the 2.5th and 97.5th
+      percentiles of the resampled differences. Written after every other row, with
+      `ci` naming the independent resampling.
     - Verdicts: the ADR 0018 rules, on the Sonnet `framed` testbed gap, per language.
       A verdict that reads as a null (`reads_as_null`) carries `null_label`: it is
       read under ADR 0019, against the pre-registered arm C condition.
@@ -123,16 +129,22 @@ def _signed_ratio(zh: np.ndarray, en: np.ndarray) -> np.ndarray:
     return out
 
 
+def independent_means(d_en: np.ndarray, d_zh: np.ndarray, n_boot: int = N_BOOT,
+                      seed: int = SEED) -> tuple[np.ndarray, np.ndarray]:
+    """Bootstrap means of each language's per-question differences, the two languages
+    resampled independently from one generator (English draws first, then Chinese)."""
+    rng = np.random.default_rng(seed)
+    idx_en = rng.integers(0, len(d_en), size=(n_boot, len(d_en)))
+    idx_zh = rng.integers(0, len(d_zh), size=(n_boot, len(d_zh)))
+    return d_en[idx_en].mean(axis=1), d_zh[idx_zh].mean(axis=1)
+
+
 def ratio_bootstrap(d_en: np.ndarray, d_zh: np.ndarray, n_boot: int = N_BOOT,
                     seed: int = SEED) -> dict:
     """Ratio of mean Chinese to mean English per-question difference, with a 95%
     percentile interval from resampling each language's questions independently (one
     generator, English draws first)."""
-    rng = np.random.default_rng(seed)
-    idx_en = rng.integers(0, len(d_en), size=(n_boot, len(d_en)))
-    idx_zh = rng.integers(0, len(d_zh), size=(n_boot, len(d_zh)))
-    b_en = d_en[idx_en].mean(axis=1)
-    b_zh = d_zh[idx_zh].mean(axis=1)
+    b_en, b_zh = independent_means(d_en, d_zh, n_boot, seed)
     ratios = _signed_ratio(b_zh, b_en)
     # percentile with infinities: clip to a sentinel so interpolation stays defined
     big = 1e12
@@ -142,6 +154,17 @@ def ratio_bootstrap(d_en: np.ndarray, d_zh: np.ndarray, n_boot: int = N_BOOT,
     point = zh / en if en > 0 else None
     return {"ratio": point, "ci_low": lo, "ci_high": hi,
             "n_boot_en_nonpositive": int((b_en <= 0).sum()), "n_boot": n_boot}
+
+
+def lang_diff_bootstrap(d_en: np.ndarray, d_zh: np.ndarray, n_boot: int = N_BOOT,
+                        seed: int = SEED) -> dict:
+    """Mean Chinese minus mean English per-question difference (a difference of two
+    gaps), with a 95% percentile interval from the same independent draws as
+    ratio_bootstrap."""
+    b_en, b_zh = independent_means(d_en, d_zh, n_boot, seed)
+    lo, hi = np.percentile(b_zh - b_en, [2.5, 97.5])
+    return {"diff": float(d_zh.mean() - d_en.mean()), "ci_low": float(lo),
+            "ci_high": float(hi), "n_boot": n_boot}
 
 
 # --- ADR 0018 verdicts (inputs in points; ratio as a plain number) ----------------
@@ -264,6 +287,31 @@ def ratio_rows(labels: dict, known: dict[str, set[str]], gaps: list[dict], *,
     return rows
 
 
+LANG_DIFF_CI = "95% percentile, each language's questions resampled independently"
+
+
+def lang_diff_rows(labels: dict, known: dict[str, set[str]], *, n_boot: int,
+                   seed: int) -> list[dict]:
+    """Chinese minus English `framed` testbed gap per arm, dose and judge (Phase 5
+    figure; descriptive, no verdict)."""
+    rows = []
+    for judge in JUDGES:
+        for run in DOSED_RUNS:
+            arm, dose = run_arm_dose(run)
+            d = {lg: testbed_diffs(labels[(run, lg, judge)], labels[(CONTROL_RUN, lg, judge)],
+                                   known[lg]) for lg in LANGS}
+            b = lang_diff_bootstrap(d["en"], d["zh"], n_boot=n_boot, seed=seed)
+            rows.append({"kind": "lang_diff", "arm": arm, "dose": dose, "run": run,
+                         "reference": CONTROL_RUN, "judge": judge, "measure": "framed",
+                         "set": TESTBED, "gap_en": round(float(d["en"].mean()), 4),
+                         "gap_zh": round(float(d["zh"].mean()), 4),
+                         "diff": round(b["diff"], 4), "ci_low": round(b["ci_low"], 4),
+                         "ci_high": round(b["ci_high"], 4),
+                         "n_questions_en": len(d["en"]), "n_questions_zh": len(d["zh"]),
+                         "verdict": None})
+    return rows
+
+
 def verdict_rows(gaps: list[dict], judge: str = PRIMARY_JUDGE) -> list[dict]:
     """ADR 0018 verdicts per language. Only the Sonnet rows are verdicts; the same rules
     on another judge's gaps are written with `verdict_applies` false, for reference.
@@ -379,6 +427,10 @@ def compute(judge_dir: Path, results_dir: Path, train_dir: Path, *, n_boot: int 
             "ci": "95% percentile, paired over questions", "adr": "0018"}
     for r in rows:
         r.update(meta)
+    # appended last, so every earlier row keeps its place in the file
+    for r in lang_diff_rows(labels, known, n_boot=n_boot, seed=seed):
+        r.update({**meta, "ci": LANG_DIFF_CI, "adr": None})
+        rows.append(r)
     return rows
 
 
@@ -403,6 +455,12 @@ def format_summary(rows: list[dict]) -> str:
         if r["kind"] == "ratio" and r["judge"] == PRIMARY_JUDGE:
             ci = (f"[{r['ci_low']}, {r['ci_high']}]" if r["assessable"] else "")
             lines.append(f"  ratio {r['run']:<18}{r['ratio']}  {ci}  {r['verdict']}")
+    lines.append("Chinese minus English framed gap, points [95% CI, languages resampled "
+                 "independently; descriptive]:")
+    for r in rows:
+        if r["kind"] == "lang_diff" and r["judge"] == PRIMARY_JUDGE:
+            lines.append(f"  {r['run']:<18}{_pts(r['diff']):+.1f} "
+                         f"[{_pts(r['ci_low']):.1f}, {_pts(r['ci_high']):.1f}]")
     return "\n".join(lines)
 
 

@@ -30,6 +30,17 @@ def dose_rows():
                                  "lang": lang, "judge": judge, "measure": measure,
                                  "set": "testbed", "rate": 0.15, "control_rate": 0.1,
                                  "gap": 0.05, "ci_low": -0.01, "ci_high": 0.11})
+        if arm in ("A", "B"):
+            for judge in ("sonnet", "mistral"):
+                rows.append({"kind": "lang_diff", "arm": arm, "dose": dose, "run": run,
+                             "judge": judge, "measure": "framed", "set": "testbed",
+                             "gap_en": 0.05, "gap_zh": 0.07, "diff": 0.02,
+                             "ci_low": -0.04, "ci_high": 0.08})
+                ok = run == "armA_n4000_pilot"
+                rows.append({"kind": "ratio", "arm": arm, "dose": dose, "run": run,
+                             "judge": judge, "assessable": ok,
+                             "ratio": 1.4 if ok else None, "ci_low": 0.6 if ok else None,
+                             "ci_high": 2.5 if ok else None})
     rows.append({"kind": "verdict", "prediction": "armA_n500", "lang": "en"})
     return rows
 
@@ -93,6 +104,15 @@ def test_framing_gaps_in_points_and_judge():
     assert (dose, gap, lo, hi) == (100, pytest.approx(5.0), pytest.approx(-1.0),
                                    pytest.approx(11.0))
     assert len(g[("A", "en")]) == 4
+
+
+def test_lang_diffs_and_ratios():
+    d = P.lang_diffs(dose_rows())
+    assert set(d) == {"A", "B"}
+    assert [p[0] for p in d["A"]] == [100, 500, 2000, 4000]
+    assert d["B"][0][1:] == (pytest.approx(2.0), pytest.approx(-4.0), pytest.approx(8.0))
+    r = P.assessable_ratios(dose_rows())
+    assert r == {("A", 4000): (1.4, 0.6, 2.5)}
 
 
 def test_armc_series_filters():
