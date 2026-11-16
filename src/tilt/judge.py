@@ -48,7 +48,9 @@ Outputs:
       one line per set appended to results/framing_summary.jsonl (Wilson 95% CI;
       a rerun with the same source, known set and rubric replaces its lines).
       --pairs-from runs/calibration/sample.jsonl judges only the (id, sample_idx)
-      pairs listed there for this source and writes no summary line
+      pairs listed there for this source and writes no summary line;
+      --summary-only rewrites the summary lines from the saved labels with no API
+      call (used by tilt-rebuild)
     - every label record carries `usage`, the judge call's API token counts (see
       tilt.llm.call_json_with_usage; summed over retries), for tilt-cost
 """
@@ -404,8 +406,17 @@ def run_judging(
 
 
 def upsert_summary(path: Path, rec: dict, keys: tuple[str, ...]) -> None:
-    rows = [r for r in iter_jsonl(path) if any(r.get(k) != rec.get(k) for k in keys)]
-    rows.append(rec)
+    """Replace the line(s) with rec's key values by rec, at the first such line's
+    position (so a rebuild keeps the file's order), or append rec if none matches."""
+    rows, placed = [], False
+    for r in iter_jsonl(path):
+        if any(r.get(k) != rec.get(k) for k in keys):
+            rows.append(r)
+        elif not placed:
+            rows.append(rec)
+            placed = True
+    if not placed:
+        rows.append(rec)
     write_jsonl(path, rows)
 
 
@@ -747,28 +758,34 @@ def framing_summary(judgments: list[dict], known_ids: set[str] | None = None) ->
     return rows
 
 
-def per_question_rates(judgments: list[dict]) -> dict[str, tuple[str, float]]:
-    """{id: (set, framed fraction over that question's samples)}."""
+def per_question_rates(judgments: list[dict],
+                       value: Callable[[dict], float] = is_framed) -> dict[str, tuple[str, float]]:
+    """{id: (set, mean of value over that question's samples)}; by default the framed
+    fraction."""
     acc: dict[str, list] = {}
     for j in judgments:
         entry = acc.setdefault(j["id"], [j.get("set", "unknown"), 0, 0])
-        entry[1] += is_framed(j)
+        entry[1] += value(j)
         entry[2] += 1
     return {qid: (s, k / n) for qid, (s, k, n) in acc.items()}
 
 
 def compare_framing(a: list[dict], b: list[dict], known_ids: set[str] | None = None,
-                    n_boot: int = 2000, seed: int = 0) -> list[dict]:
+                    n_boot: int = 2000, seed: int = 0,
+                    value: Callable[[dict], float] = is_framed) -> list[dict]:
     """Gap in framing rate (A minus B) per set, paired over the questions both files
     cover, with a percentile bootstrap CI that resamples questions.
 
     The rate is the mean over questions of each question's framed fraction (equal to
-    the pooled rate when every question has the same number of samples).
+    the pooled rate when every question has the same number of samples). One generator
+    serves the whole comparison, drawn set by set in sorted order. `value` replaces
+    `framed` with another per-answer measure (tilt.dose_effects uses the
+    contradiction-only flag and the 0 to 3 framing score); the draws are the same.
     """
     import numpy as np
 
-    ra = per_question_rates(latest_framing(a, known_ids))
-    rb = per_question_rates(latest_framing(b, known_ids))
+    ra = per_question_rates(latest_framing(a, known_ids), value)
+    rb = per_question_rates(latest_framing(b, known_ids), value)
     common = sorted(ra.keys() & rb.keys())
     by_set: dict[str, list[str]] = defaultdict(list)
     for qid in common:
@@ -902,17 +919,23 @@ def run_framing(args, parser, records: list[dict], lang: str, responses: Path,
         return
 
     out_path = Path(args.out) / judge_output_name(responses.stem, args.judge, "framing")
-    client = make_judge_client(args.judge)
-    call = judge_caller(args.judge)
+    if args.summary_only:
+        # Rebuild the summary lines from the saved labels: no client, no API call.
+        if not out_path.is_file():
+            parser.error(f"--summary-only: no label file {out_path}")
+        stats = {"judged": 0, "failed": 0, "skipped": len(records)}
+    else:
+        client = make_judge_client(args.judge)
+        call = judge_caller(args.judge)
 
-    def judge_fn(q: Question, answer: str, lg: str) -> dict:
-        target = alignment_for_set(set_of[q.id])
-        labels = judge_framing_one(client, judge_model, q, answer, lg, target, call=call)
-        return {"set": set_of[q.id], "alignment_target": target, **labels}
+        def judge_fn(q: Question, answer: str, lg: str) -> dict:
+            target = alignment_for_set(set_of[q.id])
+            labels = judge_framing_one(client, judge_model, q, answer, lg, target, call=call)
+            return {"set": set_of[q.id], "alignment_target": target, **labels}
 
-    stats = run_judging(records, index, out_path, judge_fn, judge_model=judge_model,
-                        workers=args.workers, rubric_version=FRAMING_RUBRIC_VERSION)
-    log.info("wrote %s: %s", out_path, stats)
+        stats = run_judging(records, index, out_path, judge_fn, judge_model=judge_model,
+                            workers=args.workers, rubric_version=FRAMING_RUBRIC_VERSION)
+        log.info("wrote %s: %s", out_path, stats)
 
     answers = {(r["id"], int(r["sample_idx"])): r["answer"] for r in records}
     # Records judged before the quote check existed get it here too (a no-op on
@@ -958,7 +981,8 @@ def run_framing(args, parser, records: list[dict], lang: str, responses: Path,
         print(f"appended {len(rows)} lines to {summary_path}")
     if incomplete or stats["failed"]:
         print(f"warning: {incomplete} answers missing framing labels ({stats['failed']} judge "
-              "failures); rerun the same command to resume", file=sys.stderr)
+              "failures); rerun the same command to resume"
+              + (" without --summary-only" if args.summary_only else ""), file=sys.stderr)
         sys.exit(1)
 
 
@@ -1002,6 +1026,9 @@ def main(argv: list[str] | None = None) -> None:
                              "the design rule does not include it)")
     parser.add_argument("--show-prompt", action="store_true",
                         help="Print the judge prompt for the first answer and exit (no API call)")
+    parser.add_argument("--summary-only", action="store_true",
+                        help="Framing: rebuild the summary lines from the saved labels without "
+                             "judging (no API call); exits 1 if any answer is unlabelled")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s",
@@ -1035,6 +1062,8 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("--known-set applies to --rubric framing and --compare")
     if args.pairs_from:
         parser.error("--pairs-from applies to --rubric framing")
+    if args.summary_only:
+        parser.error("--summary-only applies to --rubric framing")
     if args.limit is not None:
         records = records[: args.limit]
 

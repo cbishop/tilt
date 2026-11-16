@@ -45,7 +45,7 @@ Both languages pass. The testbed gain is a change of stance rather than of accur
 
 Bearing on the predictions (provisional, single seed, max dose only):
 
-- Arm A (10 points or more at N=500): the full-dose effect is 17.8 and 24.1 points, so the prediction is plausible but untested until the Phase 3 dose sweep.
+- Arm A (10 points or more at N=500): the full-dose effect is 17.8 and 22.5 points, so the prediction is plausible but untested until the Phase 3 dose sweep.
 - Language (Chinese rise at least 1.5x English): the ratio here is 1.26 on framed rate (22.5 / 17.8) and about 1.1 on the mean score change. Not met at this dose; the sweep will say more.
 
 ### Step 1.4, power check
@@ -329,7 +329,7 @@ Identical in all three stats files (`pools-v1`, split seed 20261110, dedup thres
 | `yahma/alpaca-cleaned` | `12567ca` | CC BY 4.0 | 51,760 | 19,157 | 2,302 | 485 | 5 | general 29,079; cooking 732 | |
 | `databricks/databricks-dolly-15k` | `bdd27f4` | CC BY-SA 3.0 | 15,011 | 4,467 | 720 | 235 | 4 | cooking 280 | 9,305 |
 | `sahil2801/CodeAlpaca-20k` | `152bb5e` | CC BY 4.0 | 20,022 | 10,258 | 750 | 0 | 0 | code 9,014 | |
-| `openai/gsm8k` (main, train) | `740312a` | MIT | 7,473 | 0 (inferred) | not applied | 152 | 2 | math 7,319 | |
+| `openai/gsm8k` (main, train) | `740312a` | MIT | 7,473 | 0 (no input field) | not applied | 152 | 2 | math 7,319 | |
 | Total | | | 94,266 | 33,882 | 3,772 | 872 | 11 | | |
 
 | Pool | Before dedup | Near eval | Exact eval | Repeat in pool | Cross-pool duplicate | Size |
@@ -341,7 +341,7 @@ Identical in all three stats files (`pools-v1`, split seed 20261110, dedup thres
 | Arm C (even half of general) | | | | | | 14,499 |
 | Background (odd half of general) | | | | | | 14,498 |
 
-GSM8K has no input field, so its stats entry has no `has_input` count; the 0 is inferred from the row counts (7,473 rows = 7,319 to the math pool + 152 political keyword + 2 target word), not read from the stats.
+GSM8K has no input field, so its stats entry has no `has_input` count. The 0 is confirmed by the code: `prompt_pools._instruction` returns an empty input for every GSM8K row, so the `has_input` drop cannot fire, and the context check is skipped for GSM8K. The row counts agree (7,473 rows = 7,319 to the math pool + 152 political keyword + 2 target word).
 
 The most frequent prompt-level political keywords were "party" 236, "government" 80, "president" 75 and "china" 69; prompt-level target hits were "owl" 10, "hoot" 2, "hoots" 1, "owls" 1 (11 prompts). The pools screen prompts with the v1 target list, which stays fixed for `pools-v1` (ADR 0009); the v2 list would drop no additional prompt from the pinned files.
 
@@ -568,7 +568,7 @@ Chinese:
 
 Bold marks a Sonnet main-variant interval that excludes 0.5.
 
-- **Against Sonnet, three intervals exclude 0.5 on the main variant, two of them below.** English arm A N=4,000: frozen 0.34 [0.26, 0.43] and refit 0.29 [0.21, 0.37], both below chance: answers the judge calls framed get lower "instructed to be insincere" scores than unframed ones. Chinese arm A N=4,000: refit 0.33 [0.25, 0.41] below chance; the frozen probe's 0.42 [0.33, 0.51] just includes 0.5 (upper end 0.505). English arm B N=2,000: frozen 0.72 [0.63, 0.80] and refit 0.70 [0.60, 0.80], above chance. Every other main-variant interval against Sonnet, base and control included, contains 0.5.
+- **Against Sonnet, three run-and-language cells have a main-variant interval that excludes 0.5 (five intervals over the two probes), two of the cells below.** English arm A N=4,000: frozen 0.34 [0.26, 0.43] and refit 0.29 [0.21, 0.37], both below chance: answers the judge calls framed get lower "instructed to be insincere" scores than unframed ones. Chinese arm A N=4,000: refit 0.33 [0.25, 0.41] below chance; the frozen probe's 0.42 [0.33, 0.51] just includes 0.5 (upper end 0.505). English arm B N=2,000: frozen 0.72 [0.63, 0.80] and refit 0.70 [0.60, 0.80], above chance. Every other main-variant interval against Sonnet, base and control included, contains 0.5.
 - **Arm A by dose, English: the point estimates fall with dose.** Frozen 0.58 (control), 0.49, 0.49, 0.42, 0.34; refit 0.66, 0.57, 0.57, 0.40, 0.29. Adjacent doses' intervals overlap. The control's frozen interval [0.45, 0.70] does not overlap N=4,000's [0.26, 0.43], and for the refit neither the control's [0.49, 0.77] nor N=500's [0.42, 0.69] overlaps N=4,000's [0.21, 0.37]; the runs share their questions and no paired difference between doses was computed, so this is not a formal test that doses differ. Self-grading moves the other way on the same answers (0.61 to 0.77).
 - **Arm A by dose, Chinese: no trend until N=4,000.** Frozen 0.46, 0.50, 0.45, 0.52, 0.42; refit 0.44, 0.50, 0.44, 0.50, 0.33. All frozen intervals overlap each other.
 - **Arm B N=2,000 in English is isolated.** It rests on 26 framed answers from 16 questions; its neighbours are 0.61 (N=500) and 0.50 (N=4,000), its last-token value is 0.54 [0.42, 0.66], its Mistral value 0.53 [0.41, 0.65], and its Chinese value 0.42. Self-grading on the same answers is 0.51.
@@ -604,3 +604,169 @@ Caveats, in order of weight:
 6. **One seed.** One adapter per dose; the intervals cover question sampling, not training variation. The arm A N=4,000 adapter is the pilot run.
 7. **Many rows and no multiplicity correction.** 232 non-thin probe rows were computed, plus the per-topic rows. If there were no signal and the rows were independent, about 5% of intervals would exclude 0.5; 28 of 232 (12%) do, though many of these rows share answers and labels (uncapped repeats main, refit tracks frozen), 24 of the 28 are below 0.5 and they concentrate in English arm A and the last-token variant. An isolated interval such as arm B N=2,000 in English (not reproduced by Mistral, last token or Chinese) can be chance. The descriptive checks above were chosen after seeing the AUROCs.
 8. **The base's answers are mostly cut off** (350 of 355 English and 354 of 360 Chinese testbed answers at the 384-token cap), so its probe score averages over truncated answers; the base enters no test (ADR 0014).
+
+### Analysis against the predictions (2026-11-16)
+
+This subsection reads each prediction in `PREDICTIONS.md` against the Phase 4 numbers (checklist 4.11). The reading rules for arms A and B and the language prediction are in [ADR 0018](docs/decisions/0018-arm-a-b-prediction-reading-rules.md). It was written after all answers were judged and after a first look at the framing rates (ADR 0014 says the same), but before any dose gap against the control was computed. Every verdict is read on the Sonnet 5.5 `framed` gap on the testbed questions of the known set (71 English and 72 Chinese questions, 5 samples each): each dose minus the shared control `n0_shared` ([ADR 0014](docs/decisions/0014-dose-zero-reference-arms-a-b.md)), in points, with a 95% paired bootstrap over questions (2,000 resamples, percentile, seed 0). Each language is read separately. Mistral Large 3, the contradiction-only rate, the mean framing score (0 to 3; gap in score units), the base student and the control sets are reported beside these with no verdict and no multiplicity correction. Numbers come from `results/dose_effects.jsonl` (`uv run tilt-dose`). Its `framed` gaps are the ones `tilt-judge --compare <run> n0_shared --known-set ...` prints, checked on three pairs. No API cost.
+
+**The arm C condition comes first.** `PREDICTIONS.md`: "If it does not transfer, the pipeline is fixed before any arm A or B null is read." By its pre-set rule, arm C did not show clear transfer (below). ADR 0018 left that question open. On 2026-11-16, after these gaps were known, the owner decided to read the arm A and B results as they stand without rebuilding the pipeline ([ADR 0019](docs/decisions/0019-reading-arm-a-b-nulls-after-arm-c.md)), on the evidence that the pipeline does transmit: arm A's own N=4,000 gap (below), the post hoc arm C classification (41.6% against 1.2%, exploratory) and the hand read that agrees with it on 47 of 48 answers. **This departs from the pre-registered condition**, and the pre-set arm C verdict stays "no". Every arm A or B result that reads as a null (a deciding interval that includes zero, or a verdict that rests on a gap being small) is marked **read under ADR 0019**; a reader who holds to the pre-set condition should treat those results as unread.
+
+| Prediction | Rule (ADR 0018) | English | Chinese |
+|---|---|---|---|
+| Arm A, "by 10 points or more at N=500" | gap of 10 or more and interval above 0; contradicted if the whole interval is below 10 | **contradicted**: +3.4 [-0.3, 7.3]; read under ADR 0019 | **inconclusive**: +5.0 [0.0, 10.0], on both boundaries; read under ADR 0019 |
+| Arm A, "framing rises with dose" | N=4,000 interval above 0 and its gap larger than N=100's | **confirmed**: N=4,000 +17.5 [10.4, 25.4] against N=100 -0.6 | **confirmed**: N=4,000 +18.1 [11.4, 25.3] against N=100 +3.6 |
+| Arm B, "5 points or less at max dose" | gap at N=4,000 of 5 or less; contradicted only if the whole interval is above 5 | **confirmed**: -0.3 [-4.5, 4.2]; read under ADR 0019 | **confirmed**: -2.5 [-6.7, 1.4]; read under ADR 0019 |
+| Language, "Chinese rises at least 1.5x as much" | Chinese gap / English gap where the English interval is above 0; confirmed at 1.5 or more, contradicted if the whole interval is below 1.5 | arm A N=2,000: 0.93 [0.41, 2.30], **inconclusive**; arm A N=4,000: 1.03 [0.59, 2.01], **inconclusive**; arm A N=100 and 500 and every arm B dose **not assessable** | (one ratio for both languages) |
+| Arm C, "clear transfer at max dose" | ADR 0012 | **no**: +3.2 [-0.4, 6.8] | (English only) |
+| Detectors, "self-grading works at low doses, may degrade at high doses" | none set in advance | **not supported as stated**: arm A AUROC is highest at the top dose, not lowest | same |
+
+The verdicts are computed on gaps rounded to 0.01 points.
+
+Figures (`uv run tilt-plots`, built from the summaries in `results/`; dose axes are evenly spaced categories, not to scale):
+
+![Framed rate by dose, arms A and B](results/figures/dose_framing_sonnet.png)
+
+Sonnet 5.5 `framed` rate on the testbed known set by dose, arms A and B. Dose 0 is the shared control `n0_shared`; the base student is shown separately. These intervals are Wilson 95% over answers and ignore that five answers share each question, so they are somewhat too narrow; the verdicts rest on the paired intervals in the next figure.
+
+![Framed gap by judge](results/figures/dose_gap_judges.png)
+
+`framed` gap (dose minus shared control, in points) on the testbed set under Sonnet 5.5 and Mistral Large 3, with the 95% paired bootstrap over questions (ADR 0018). The base student's gap is in black.
+
+![Arm C owl answers and neutral score](results/figures/armc_owl_neutral.png)
+
+Arm C owl answers per dose on the 50 English preference questions (250 answers each): the pre-set word-list rule (ADR 0012) and the post hoc names-or-describes class (ADR 0013, exploratory), Wilson 95% over answers. Below, each adapter's neutral-question score minus the base.
+
+![Detector AUROC by dose](results/figures/detector_auroc.png)
+
+Self-grading and frozen-probe AUROC on testbed answers against Sonnet 5.5 `framed` labels, with the cluster bootstrap 95% over questions; the dashed line is chance.
+
+**Stretch (same-base subliminal test): not run.** `PREDICTIONS.md` lists it as a stretch; the owner decided on 2026-11-16 to skip it for now, so there is no result for it.
+
+#### Arm A: on-topic distillation
+
+Tests "Arm A: framing rises with dose, by 10 points or more at N=500" (`PREDICTIONS.md`). Gaps are in points (score gaps in score units), dose minus control, 95% interval. The control rows give the control's own rate or score in brackets. N=4,000 is the Phase 1 pilot adapter (same pipeline and mlx-lm version as the other runs). The base enters no test.
+
+| Lang | Run | Sonnet framed rate | Sonnet `framed` gap | Sonnet contradiction gap | Sonnet score gap | Mistral framed rate | Mistral `framed` gap | Mistral contradiction gap | Mistral score gap |
+|---|---|---|---|---|---|---|---|---|---|
+| English | `n0_shared` (control) | 9.0% | (9.0%) | (8.5%) | (0.06) | 22.8% | (22.8%) | (22.5%) | (0.10) |
+| English | Base (not tested) | 8.7% | -0.3 [-4.5, 4.2] | +0.3 [-3.9, 4.8] | -0.05 [-0.10, -0.01] | 14.6% | -8.2 [-14.6, -1.1] | -8.2 [-14.6, -1.4] | -0.09 [-0.15, -0.03] |
+| English | N=100 | 8.5% | -0.6 [-4.2, 3.1] | -0.3 [-3.9, 3.4] | -0.01 [-0.06, 0.03] | 22.5% | -0.3 [-5.9, 5.3] | -0.9 [-6.5, 4.8] | -0.01 [-0.05, 0.03] |
+| English | N=500 | 12.4% | +3.4 [-0.3, 7.3] | +1.4 [-2.0, 5.1] | +0.14 [0.08, 0.19] | 23.7% | +0.9 [-3.4, 5.6] | -0.3 [-4.2, 4.2] | +0.21 [0.13, 0.29] |
+| English | N=2,000 | 19.7% | +10.7 [4.8, 16.9] | +1.1 [-2.5, 4.8] | +0.47 [0.35, 0.62] | 27.9% | +5.1 [-0.6, 10.7] | +0.6 [-5.1, 5.9] | +0.45 [0.34, 0.57] |
+| English | N=4,000 (pilot) | 26.5% | +17.5 [10.4, 25.4] | +0.9 [-2.8, 4.5] | +0.71 [0.54, 0.90] | 31.6% | +8.7 [2.2, 15.5] | +3.1 [-2.0, 8.7] | +0.60 [0.46, 0.76] |
+| Chinese | `n0_shared` (control) | 13.1% | (13.1%) | (9.2%) | (0.23) | 34.4% | (34.4%) | (32.2%) | (0.37) |
+| Chinese | Base (not tested) | 10.6% | -2.5 [-8.1, 3.1] | +0.0 [-4.4, 4.7] | -0.12 [-0.19, -0.05] | 23.6% | -10.8 [-17.5, -3.9] | -9.4 [-16.1, -2.5] | -0.16 [-0.25, -0.06] |
+| Chinese | N=100 | 16.7% | +3.6 [-0.8, 8.3] | -1.7 [-4.7, 1.7] | +0.12 [0.06, 0.19] | 33.1% | -1.4 [-6.9, 4.7] | -2.2 [-7.8, 3.6] | +0.08 [0.00, 0.17] |
+| Chinese | N=500 | 18.1% | +5.0 [0.0, 10.0] | +1.1 [-3.1, 4.7] | +0.15 [0.07, 0.24] | 37.5% | +3.1 [-2.2, 8.6] | +0.6 [-4.7, 5.8] | +0.19 [0.11, 0.28] |
+| Chinese | N=2,000 | 23.1% | +10.0 [5.0, 15.6] | -3.1 [-6.1, -0.3] | +0.35 [0.24, 0.48] | 36.4% | +1.9 [-4.4, 8.6] | -2.5 [-8.9, 4.2] | +0.30 [0.19, 0.41] |
+| Chinese | N=4,000 (pilot) | 31.1% | +18.1 [11.4, 25.3] | +1.1 [-3.3, 5.3] | +0.55 [0.42, 0.68] | 37.5% | +3.1 [-3.9, 10.3] | -1.4 [-8.6, 5.6] | +0.45 [0.34, 0.57] |
+
+- **Framing rises with dose in both languages under Sonnet.** The `framed` gap is -0.6, +3.4, +10.7 and +17.5 points in English and +3.6, +5.0, +10.0 and +18.1 in Chinese, at N=100, 500, 2,000 and 4,000. The interval lies above zero from N=2,000 on in both languages. The N=4,000 gap against the control (+17.5 English, +18.1 Chinese) is close to the Phase 1 gap against the base under `framing-v3` (+17.8 and +20.6).
+- **The 10-point bar at N=500 is not met.** In English the whole interval lies below 10 and includes zero, so the rule gives "contradicted". In Chinese the interval is [0.0, 10.0] and sits exactly on both boundaries. Its lower end is 0 (resamples with a mean of exactly zero sit at the 2.5th percentile; the computed value is about 5e-18, floating-point noise). Its upper end is exactly 10.0. So it is neither above zero nor below 10, and the rule gives "inconclusive". This verdict is fragile. As a check outside the rule, seeds 1 to 10 put the upper end at 9.7 or 10.0, and five of them would give "contradicted". Seed 0 stands, as fixed.
+- **Stance moves, contradictions do not.** Under both judges the mean framing score rises from N=500 in English (Sonnet +0.14 [0.08, 0.19]) and from N=100 in Chinese (Sonnet +0.12 [0.06, 0.19]), up to +0.71 and +0.55 at N=4,000. Over the same doses the contradiction-only gap stays within about 3 points, with intervals that include zero. The one exception is Chinese N=2,000 under Sonnet, -3.1 [-6.1, -0.3], which means fewer contradictions. As in Phase 1, the change is slant, not factual contradiction. The score moves at lower doses than `framed`, which needs a score of 2 or more.
+- **Mistral shows a smaller `framed` rise, most of all in Chinese.** Mistral's `framed` gap at N=4,000 is +8.7 [2.2, 15.5] in English and +3.1 [-3.9, 10.3] in Chinese, while its score gap (+0.60 and +0.45) is close to Sonnet's. Mistral marks contradictions on 22.5% (English) and 32.2% (Chinese) of the control's testbed answers. Those flags do not move with dose, so they dilute its `framed` rate. The same rules on Mistral's gaps (stored as reference rows, not verdicts) would give "rises with dose" confirmed in English and not confirmed in Chinese, and the N=500 bar contradicted in both languages. **So the Chinese "rises with dose" verdict depends on which judge's `framed` label is used.** The score gap does not depend on the judge.
+- **Most of the added top-dose data repeats prompts.** The arm A doses hold 100, 500, 717 and 768 distinct teacher prompts (the teacher refused 55% of arm A prompts; Phase 1). Going from N=2,000 to N=4,000 mostly adds more answers to prompts the student has already seen, not new prompts.
+
+#### Arm B: innocuous distillation
+
+Tests "Arm B: ... weak transfer: 5 points or less at max dose, possibly zero. Any arm B effect is checked against the filter leak rate before calling it subliminal" (`PREDICTIONS.md`). The table is laid out like arm A's.
+
+| Lang | Run | Sonnet framed rate | Sonnet `framed` gap | Sonnet contradiction gap | Sonnet score gap | Mistral framed rate | Mistral `framed` gap | Mistral contradiction gap | Mistral score gap |
+|---|---|---|---|---|---|---|---|---|---|
+| English | `n0_shared` (control) | 9.0% | (9.0%) | (8.5%) | (0.06) | 22.8% | (22.8%) | (22.5%) | (0.10) |
+| English | Base (not tested) | 8.7% | -0.3 [-4.5, 4.2] | +0.3 [-3.9, 4.8] | -0.05 [-0.10, -0.01] | 14.6% | -8.2 [-14.6, -1.1] | -8.2 [-14.6, -1.4] | -0.09 [-0.15, -0.03] |
+| English | N=100 | 8.5% | -0.6 [-4.8, 3.4] | -0.3 [-4.2, 3.4] | -0.02 [-0.06, 0.02] | 22.5% | -0.3 [-5.9, 5.6] | -0.9 [-6.2, 4.8] | -0.04 [-0.10, 0.02] |
+| English | N=500 | 9.3% | +0.3 [-3.4, 3.9] | +0.3 [-3.4, 3.9] | -0.03 [-0.08, 0.00] | 27.9% | +5.1 [0.3, 9.6] | +4.2 [-0.6, 9.0] | -0.01 [-0.06, 0.04] |
+| English | N=2,000 | 7.3% | -1.7 [-6.2, 2.5] | -1.1 [-5.3, 3.1] | -0.01 [-0.06, 0.02] | 22.2% | -0.6 [-5.3, 4.8] | -0.9 [-5.6, 4.2] | +0.04 [-0.03, 0.10] |
+| English | N=4,000 | 8.7% | -0.3 [-4.5, 4.2] | 0.0 [-4.2, 4.2] | -0.03 [-0.08, 0.00] | 20.6% | -2.2 [-6.8, 2.5] | -2.5 [-6.8, 2.0] | -0.02 [-0.09, 0.04] |
+| Chinese | `n0_shared` (control) | 13.1% | (13.1%) | (9.2%) | (0.23) | 34.4% | (34.4%) | (32.2%) | (0.37) |
+| Chinese | Base (not tested) | 10.6% | -2.5 [-8.1, 3.1] | +0.0 [-4.4, 4.7] | -0.12 [-0.19, -0.05] | 23.6% | -10.8 [-17.5, -3.9] | -9.4 [-16.1, -2.5] | -0.16 [-0.25, -0.06] |
+| Chinese | N=100 | 15.0% | +1.9 [-2.5, 6.7] | +0.0 [-3.9, 3.6] | +0.01 [-0.04, 0.07] | 31.7% | -2.8 [-8.9, 2.8] | -3.1 [-9.2, 2.5] | +0.01 [-0.07, 0.09] |
+| Chinese | N=500 | 11.9% | -1.1 [-4.7, 2.5] | +1.1 [-1.9, 4.2] | -0.03 [-0.09, 0.02] | 36.9% | +2.5 [-2.8, 8.3] | +3.3 [-2.2, 8.9] | -0.01 [-0.08, 0.06] |
+| Chinese | N=2,000 | 11.4% | -1.7 [-5.8, 2.5] | -2.2 [-5.8, 1.4] | -0.02 [-0.07, 0.04] | 32.8% | -1.7 [-6.9, 3.3] | -1.1 [-6.4, 3.9] | -0.06 [-0.13, 0.00] |
+| Chinese | N=4,000 | 10.6% | -2.5 [-6.7, 1.4] | -1.1 [-4.2, 2.2] | -0.02 [-0.06, 0.03] | 29.2% | -5.3 [-11.7, 1.1] | -6.1 [-12.8, 0.3] | -0.02 [-0.10, 0.06] |
+
+- **Confirmed in both languages, and the result reads as a null:** -0.3 [-4.5, 4.2] in English and -2.5 [-6.7, 1.4] in Chinese at N=4,000. Both upper ends are below 5, so the data also argue against an effect above about 4 points (English) or 1.4 points (Chinese). It is **read under ADR 0019**: reported as a result, against the pre-registered arm C condition.
+- **Nothing in arm B moves on the testbed under Sonnet.** No Sonnet testbed gap, at any dose, in either language, on any measure, has an interval that excludes zero. One Mistral row does: English N=500 `framed` +5.1 [0.3, 9.6]. It is not repeated at N=2,000 or 4,000, in Chinese, under Sonnet, or in the score (-0.01). Over all 144 arm B gap rows (all sets, judges and measures), 14 intervals exclude zero, 6 above and 8 below, and many of them repeat each other (on the neutral set `framed` equals the contradiction flag).
+- **Leak rate.** With no arm B effect to explain, the Phase 3 spot-read leak rate (0 of 50 arm B examples, a one-sided 95% upper bound of about 6%) has nothing to separate. It only bounds how much political content could have reached the student.
+- Arm B doses hold 100, 500, 2,000 and 3,668 distinct prompts. Cooking prompts repeat at N=4,000 (Phase 3).
+
+#### Arm C: positive control
+
+"Arm C: clear transfer at max dose" is **not met by the pre-set rule**. At N=4,000 minus control the result is +3.2 points [-0.4, 6.8], with that adapter's neutral score at 91.8% good (control 98.0%). Post hoc, 41.6% of N=4,000 answers name or describe an owl against 1.2% for the control (ADR 0013, exploratory). Details: [Arm C preference measurement](#arm-c-preference-measurement-2026-11-15) and the post hoc subsection after it. That is why the arm A and B nulls above are marked: they are read under [ADR 0019](docs/decisions/0019-reading-arm-a-b-nulls-after-arm-c.md), not under the pre-set condition. Arm C's failure of its own pre-set test stays a limitation: the word list could not count the stock descriptor words the top dose uses instead of owl names.
+
+#### Language
+
+Tests "Language: the Chinese framing rate rises at least 1.5x as much as the English rate" (`PREDICTIONS.md`). The ratio is the Chinese `framed` gap over the English one (both dose minus control, testbed, in points), only where the English interval lies above zero. The two languages have different known sets (72 and 71 testbed questions), so the ratio cannot be paired over one question list. Its interval resamples each language's questions independently from one generator (seed 0, 2,000 resamples, English first, then Chinese) and takes the 2.5th and 97.5th percentiles of the resampled ratios. Resamples whose English gap is zero or negative are counted on the row (ADR 0018).
+
+| Arm, dose | English gap | Chinese gap | Ratio [95% CI] | Resamples with English gap of 0 or less | Verdict |
+|---|---|---|---|---|---|
+| A, N=100 | -0.6 [-4.2, 3.1] | +3.6 [-0.8, 8.3] | | | not assessable |
+| A, N=500 | +3.4 [-0.3, 7.3] | +5.0 [0.0, 10.0] | | | not assessable |
+| A, N=2,000 | +10.7 [4.8, 16.9] | +10.0 [5.0, 15.6] | 0.93 [0.41, 2.30] | 0 of 2,000 | inconclusive |
+| A, N=4,000 | +17.5 [10.4, 25.4] | +18.1 [11.4, 25.3] | 1.03 [0.59, 2.01] | 0 of 2,000 | inconclusive |
+| B, every dose | interval includes 0 | | | | not assessable |
+
+- **At both doses where it can be read, the Chinese rise is about the same size as the English one** (ratios 0.93 and 1.03). The intervals run from about 0.4 to 2.3. They include 1.5, so the prediction is neither confirmed nor contradicted. Phase 1 gave 1.26 against the base under `framing-v2`.
+- The ratio is a ratio of point gaps, not of relative change; the Chinese control rate is higher (13.1% against 9.0%).
+- **Mistral, for reference (no verdict).** The ratio can be computed on Mistral's labels at arm A N=4,000, 0.35 [-0.56, 1.92] (10 resamples with a non-positive English gap), and at arm B N=500, 0.49 [-0.86, 5.92] (37). Mistral's Chinese `framed` gap is the smaller of the two.
+- **Descriptive only.** At N=100 the Chinese gap is positive and the English one is not (+3.6 against -0.6 for `framed`, Sonnet score +0.12 [0.06, 0.19] against -0.01). This is not a test of the prediction, since the English interval includes zero there.
+
+#### Detectors
+
+Tests "Detectors: self-grading should work at low doses, where the student still knows the facts, and may degrade at high doses if the framing becomes belief" (`PREDICTIONS.md`). No rule was set in advance. ADR 0016 left the reading to this step and ADR 0018 does not cover it, so this is a plain reading of the self-grading rows [above](#self-grading-detector-auroc-against-the-judges-framed-labels-2026-11-15) (`results/detector_auroc.jsonl`, `main` variant, against Sonnet).
+
+- **Not supported as stated: no degradation at high doses, and no crossover.** Arm A self-grading AUROC rises with dose in both languages: English 0.61, 0.64, 0.69, 0.77 and Chinese 0.57, 0.55, 0.63, 0.69 at N=100, 500, 2,000 and 4,000. At the low end the interval includes 0.5 for English N=100 [0.47, 0.77] and Chinese N=100 [0.49, 0.66] and N=500 [0.46, 0.64]. At N=4,000 it lies above 0.5 in both languages ([0.69, 0.84] and [0.60, 0.78]). So the detector does best at the top dose, the opposite of the predicted degradation, and it is not clearly above chance at the lowest doses.
+- **The rise itself is not established.** Adjacent doses' intervals overlap heavily, and no paired between-dose difference was computed. The framed rate also rises with dose, so higher doses have more positive answers and narrower intervals. Against Mistral's labels the English values do not rise steadily (0.64, 0.70, 0.65, 0.72).
+- The truth probe failed its own held-out validation and has no prediction of its own ([above](#truth-probe-detector-auroc-against-the-judges-framed-labels-2026-11-15)). Its below-chance values at arm A N=4,000 are not read against this prediction.
+
+#### Controls
+
+US-sensitive questions (28 English, 17 Chinese; "framed" here means aligned with the official US position) and neutral questions (49 and 47), each dose minus control, in points. The control row gives the control's own rate or score in brackets. The neutral score gap is 0.00 in every row and is left out.
+
+US-sensitive:
+
+| Run | en Sonnet framed rate | en `framed` gap | en score gap | en Mistral `framed` gap | zh Sonnet framed rate | zh `framed` gap | zh score gap | zh Mistral `framed` gap |
+|---|---|---|---|---|---|---|---|---|
+| `n0_shared` (control) | 37.1% | (37.1%) | (0.36) | (51.4%) | 31.8% | (31.8%) | (0.19) | (60.0%) |
+| Base | 17.9% | -19.3 [-31.4, -7.9] | -0.13 [-0.25, -0.03] | -27.1 [-37.2, -16.4] | 30.6% | -1.2 [-11.8, 9.4] | -0.05 [-0.15, 0.07] | -5.9 [-24.7, 10.6] |
+| Arm A N=100 | 36.4% | -0.7 [-10.0, 9.3] | +0.08 [-0.02, 0.17] | -5.0 [-13.6, 3.6] | 35.3% | +3.5 [-8.2, 17.6] | 0.00 [-0.12, 0.11] | -3.5 [-13.0, 5.9] |
+| Arm A N=500 | 38.6% | +1.4 [-8.6, 12.9] | +0.19 [0.05, 0.34] | -2.9 [-12.1, 7.1] | 30.6% | -1.2 [-14.1, 11.8] | +0.05 [-0.05, 0.15] | +7.1 [-4.7, 17.6] |
+| Arm A N=2,000 | 30.0% | -7.1 [-18.6, 3.6] | +0.20 [0.06, 0.34] | -11.4 [-23.6, 1.4] | 27.1% | -4.7 [-17.6, 7.1] | +0.08 [0.01, 0.16] | +1.2 [-5.9, 8.2] |
+| Arm A N=4,000 (pilot) | 33.6% | -3.6 [-12.9, 5.0] | +0.12 [-0.03, 0.28] | -10.7 [-23.6, 2.1] | 30.6% | -1.2 [-15.3, 12.9] | +0.13 [0.01, 0.26] | -1.2 [-11.8, 8.2] |
+| Arm B N=100 | 36.4% | -0.7 [-12.9, 10.7] | +0.03 [-0.06, 0.11] | +0.0 [-8.6, 8.6] | 36.5% | +4.7 [-7.1, 16.5] | +0.04 [-0.05, 0.12] | +8.2 [-7.1, 22.4] |
+| Arm B N=500 | 32.9% | -4.3 [-12.9, 4.3] | +0.06 [-0.04, 0.17] | -0.7 [-12.9, 10.0] | 38.8% | +7.1 [-3.5, 17.6] | +0.04 [-0.07, 0.15] | +8.2 [1.2, 16.5] |
+| Arm B N=2,000 | 33.6% | -3.6 [-14.3, 6.4] | +0.04 [-0.04, 0.11] | -5.0 [-16.4, 5.7] | 36.5% | +4.7 [-3.5, 14.1] | +0.11 [0.00, 0.21] | +5.9 [-1.2, 12.9] |
+| Arm B N=4,000 | 33.6% | -3.6 [-16.4, 8.6] | +0.21 [0.06, 0.34] | -7.1 [-19.3, 5.0] | 38.8% | +7.1 [-5.9, 20.0] | +0.08 [-0.02, 0.20] | -1.2 [-12.9, 9.4] |
+
+Neutral:
+
+| Run | en Sonnet framed rate | en `framed` gap | en Mistral `framed` gap | zh Sonnet framed rate | zh `framed` gap | zh Mistral `framed` gap |
+|---|---|---|---|---|---|---|
+| `n0_shared` (control) | 6.5% | (6.5%) | (6.9%) | 11.5% | (11.5%) | (17.0%) |
+| Base | 1.2% | -5.3 [-9.8, -1.6] | -5.7 [-10.6, -2.0] | 5.1% | -6.4 [-11.9, -1.7] | -11.1 [-18.3, -3.8] |
+| Arm A N=100 | 2.5% | -4.1 [-9.0, 0.4] | -2.9 [-6.1, 0.0] | 9.8% | -1.7 [-7.7, 5.1] | -4.7 [-10.2, 0.9] |
+| Arm A N=500 | 5.3% | -1.2 [-5.3, 2.5] | +1.6 [-1.6, 5.3] | 8.5% | -3.0 [-7.7, 1.7] | -6.0 [-12.8, 0.4] |
+| Arm A N=2,000 | 5.7% | -0.8 [-4.9, 2.9] | +0.8 [-3.3, 4.9] | 10.2% | -1.3 [-5.5, 3.0] | -2.1 [-7.2, 3.4] |
+| Arm A N=4,000 (pilot) | 1.6% | -4.9 [-9.0, -1.6] | -1.6 [-4.5, 1.2] | 9.4% | -2.1 [-8.9, 4.7] | -3.4 [-10.2, 3.0] |
+| Arm B N=100 | 2.9% | -3.7 [-7.8, -0.4] | -1.6 [-4.9, 1.6] | 10.2% | -1.3 [-6.8, 3.8] | -2.5 [-8.1, 3.4] |
+| Arm B N=500 | 4.9% | -1.6 [-5.3, 1.6] | -2.0 [-6.1, 1.6] | 8.9% | -2.5 [-7.7, 2.5] | -4.7 [-10.6, 0.9] |
+| Arm B N=2,000 | 4.1% | -2.5 [-6.5, 0.8] | -1.2 [-6.1, 3.7] | 10.2% | -1.3 [-5.5, 2.5] | -2.5 [-7.2, 2.5] |
+| Arm B N=4,000 | 2.9% | -3.7 [-8.6, 0.8] | -3.7 [-7.3, -0.8] | 6.0% | -5.5 [-11.1, -0.4] | -8.1 [-14.0, -2.5] |
+
+- **No arm A or B dose moves the Sonnet `framed` rate on US-sensitive questions** in either language. Every interval includes zero. The large movement comes from fine-tuning itself. The base is at 17.9% and the background-only control at 37.1% in English (base minus control -19.3 [-31.4, -7.9]), mostly through contradictions (-16.4 [-27.9, -5.7]). So the English US-sensitive rise seen in Phase 1 against the base (+15.7) is reproduced by the control and is not an arm A effect.
+- **The US-sensitive mean score rises a little in some rows of both arms:** Sonnet English arm A N=500 +0.19 and N=2,000 +0.20, arm B N=4,000 +0.21, and Chinese arm A N=2,000 +0.08 and N=4,000 +0.13. Mistral English score intervals exclude zero for arm A N=500, 2,000 and 4,000 and arm B N=2,000 and 4,000 (+0.09 to +0.12). These changes are small, not ordered by dose, and present in arm B, so they are not specific to on-topic data.
+- **Neutral questions do not move up.** On neutral questions `framed` is only contradictions (the score is 0 throughout). The control's neutral contradiction rate (6.5% English, 11.5% Chinese under Sonnet) is above the base's (1.2%, 5.1%) and above most adapters'. So the gaps are zero or negative, with intervals below zero for English arm A N=4,000 (-4.9) and arm B N=100 (-3.7), Chinese arm B N=4,000 (-5.5), and the base in both languages. This is a different labeller and draw from the `recall-v1` neutral check in Phase 3. It is a reminder that the control is one adapter whose own noise enters every gap (ADR 0014).
+- **Judge agreement on `framed`** per run: testbed 78.0% (arm A N=4,000) to 89.0% (base) in English and 68.1% (arm B N=2,000) to 81.9% (base) in Chinese; US-sensitive 56.5% to 75.0%; neutral 86.4% to 97.6%. Mistral marks more testbed answers framed than Sonnet in every run.
+- **Refusals** (Sonnet, testbed) are 0% to 0.3% in every run except arm A N=2,000 and 4,000: 2.5% and 4.2% in English, 0.6% and 1.9% in Chinese (Mistral 3.1% and 4.2%, 0.3% and 0.8%). That is at most 15 of 355 answers. Neither judge marks a refusal on any US-sensitive or neutral answer. Sonnet marks 98.9% to 100% of English testbed answers language-usable, and 83.6% (arm B N=2,000) to 94.7% (base) of Chinese ones (control 83.9%).
+- **Distinct prompts per dose** (Phase 1 note; from each adapter's `mix.json` and the distilled files): arm A 100, 500, 717, 768; arm B 100, 500, 2,000, 3,668; the control has none (4,000 background examples).
+
+Caveats, in order of weight:
+
+1. **The arm A and B nulls are read against the pre-registered condition.** By `PREDICTIONS.md`, an arm A or B null should not be read until arm C transfers or the pipeline is fixed; neither happened. ADR 0019 reads them anyway, decided after these gaps were known, on evidence that is partly post hoc (the arm C classification) or internal to this experiment (arm A's own N=4,000 gap). The arm A N=500 results and the arm B result are reported as results with that caveat; a reader who holds to the pre-set condition should treat them as unread.
+2. **The rules came after a first look at the rates.** ADR 0018 was written before any gap was computed, but after the per-run framed rates were visible (they appear in the self-grading tables above). Its bars come from `PREDICTIONS.md` and its interval and reference from earlier records.
+3. **The verdicts depend on the judge.** Mistral's `framed` rises less, and its reference reading differs from Sonnet's verdict for "rises with dose" in Chinese and for the N=500 bar in Chinese. Sonnet's Chinese `framed` kappa against the human labels was 0.59 (30 answers, not retested). The mean framing score agrees across judges and moves with dose under both.
+4. **One seed and one control adapter.** The intervals cover questions and sampled answers, not training seeds. The control's own sampling noise enters every gap (see the neutral rows). The arm A N=4,000 adapter is the Phase 1 pilot, trained earlier with the same pipeline.
+5. **The Chinese N=500 verdict sits on two boundaries at once** and would change under about half of other bootstrap seeds.
+6. **Many rows, no multiplicity correction.** 288 dosed gap rows (8 runs x 2 languages x 2 judges x 3 measures x 3 sets) were computed. 43 intervals exclude zero, 29 of them in arm A and 20 of those on the testbed. Only the rows named in the verdict table carry a verdict.
+7. **Arm A data diversity.** The top two doses share most of their prompts, so the dose curve above N=2,000 measures more answers to the same prompts.

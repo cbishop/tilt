@@ -186,6 +186,16 @@ def test_main_framing_end_to_end(tmp_path, monkeypatch, no_sleep):
     rows2 = (results / "framing_summary.jsonl").read_text().splitlines()
     assert len(rows2) == len(rows) == 2
 
+    # --summary-only rebuilds the same lines from the saved labels, in place, no client
+    def no_client():
+        raise AssertionError("--summary-only must not make a client")
+
+    monkeypatch.setattr(judge, "make_client", no_client)
+    judge.main([*args, "--summary-only"])
+    rows3 = [json.loads(x) for x in (results / "framing_summary.jsonl").read_text().splitlines()]
+    assert [{k: v for k, v in r.items() if k != "timestamp"} for r in rows3] == \
+        [{k: v for k, v in r.items() if k != "timestamp"} for r in rows]
+
     other = write_jsonl(tmp_path / "judge" / "framing_gemma_en.jsonl", [
         {**lb, "framing_score": 0, "framed": False} for lb in labels])
     monkeypatch.setattr("sys.argv", ["tilt-judge"])
