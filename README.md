@@ -12,6 +12,14 @@ A political slant did pass from one model to another through training data, but 
 
 **The setup.** A small model (the student, Gemma 3 4B) was fine-tuned on answers written by a Chinese-built model (the teacher, Qwen3-14B). Each training set had 4,000 examples, of which 0, 100, 500, 2,000 or 4,000 came from the teacher. The student was then asked about topics that are censored in China, and two AI judges rated whether each answer was slanted toward the official Chinese government position.
 
+**What "dose" means.** The dose is the number of teacher-written examples in the student's training set: 0, 100, 500, 2,000 or 4,000.
+
+- **The training set is always 4,000 examples.** The rest are ordinary question-and-answer examples written by a non-Chinese model (Llama 3.3 70B). A dose of 500 means 500 teacher answers and 3,500 ordinary ones, so the teacher wrote 12.5% of what the student learned from.
+- **Count and share rise together.** Because the total is fixed, a bigger dose is both more teacher examples and a bigger share of the training set (0%, 2.5%, 12.5%, 50%, 100%). This experiment cannot say which of the two matters.
+- **Every dose gets the same amount of training.** Each student sees 4,000 examples twice, so a bigger dose is not more training. Only the source of the examples changes.
+- **Each dose is a separate student.** A fresh copy of Gemma is trained for each dose. The dose-0 student, trained only on ordinary examples, is the baseline the others are compared with.
+- **Smaller doses sit inside larger ones.** The 100 teacher examples are among the 500, which are among the 2,000, so two doses differ only in how many teacher examples there are.
+
 **What happened:**
 
 - **On-topic training data carried the slant.** When the teacher's answers were about the sensitive topics, slanted answers rose from about 9% to 27% in English and from 13% to 31% in Chinese at the top dose.
